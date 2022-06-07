@@ -1,0 +1,2906 @@
+title: "EU-SILC analysis child EU27"
+author: "Nick Bailey"
+date: "16/05/2022"
+output: html_document
+---
+
+
+# EU-SILC analysis - adaptive child deprivation measure - summary
+
+This version produces results for the 27 EU member states providing data on child deprivation for the 2014 EU-SILC (set via 'country2'). 
+
+
+## Aim
+To explore how well the adaptive approach to measuring deprivation might be applied to the EU's child deprivation scale.
+
+## Context
+There is enormous variation in levels of deprivation across the EU. In the majority of countries, fewer than 10% of people lack 3+ items. But in Romania and Bulgaria, for example, it is more than half. 
+
+The set of items used to capture deprivation is focussed on items which relatively few people lack. Of the 17 items, 13 are lacked by less than 10% of the population with four of these lacked by less than 5%. As a result, most of the information provided by the deprivation scale is concentrated into the bottom 5% of the distribution. On the most common summary measure (lacking 3+ items), around one-in-five households with children are deprived so there is a significant mismatch with the result that this measure relies heavily on a small number of items from the scale.  
+
+## Summary
+
+### RQ1
+RQ1: To what extent is the ordering of deprivation items similar across the countries of the EU? Do national/cultural variations lead to differences in how the consumption of items declines with falling resources?
+
+Overall, there is broad correlation but also some significant variation for certain items and countries. For most countries, however, there is a higher level of agreement for the ordering for the most lacked items. These are the ones which are particularly important for the adaptive approach. 
+
+### RQ2
+RQ2: To what extent can a single EU-wide approach be used, and with what time saving/information loss, at the level of the EU as a whole and at the individual country level? 
+
+A single EU-wide approach does look feasible. To assess this, we focus on four fairly similar algorithms, all selected to give very low information losses but some with slightly higher time saving and information loss, and others slightly lower. Depending on the algorithm selected, this could give time savings from 33% to 44% while still maintaining extremely high accuracy compared with the full scale. 
+
+
+### RQ3
+RQ3: How does the adaptive approach perform when looking at the individual countries separately (i.e. allowing ordering of items and algorithm to vary nationally)? Are the time saving/information loss trade-offs similar to those for the UK?
+
+Overall, the use of a country-specific algorithm does lead to improvements but the gains are not dramatic and, in some cases, the result is worse than using the single EU-wide model. For the UK, the country-specific approach gives a result very similar to that reported in Bailey (2020).
+
+
+## Conclusion
+The 'best' approach will depend upon the intended uses but there are adaptive scales which make significant time savings (around 40%) with very minimal information losses at the level of the EU as a whole and within each country. 
+
+It would be possible to use variations of the algorithm in different countries, reflecting local specifics and hence reducing information losses even further. However, this would lead to even greater complexity and may raise concerns about comparability between countries so is unlikely to be preferable. 
+
+
+# Intro
+
+The aim is to repeat the analysis from Bailey (2020) but using the EU-SILC child deprivation indicators rather than the UK's child deprivation scale from the Family Resources Survey. The additional complication in this context is the extent of variation between countries in the severity of the items, and hence the extent to which a single ordering of items and a single algorithm would work for all the countries of the EU.
+
+Key research questions:
+
+* RQ1: To what extent is the ordering of items similar across the countries of the EU? Do national/cultural variations lead to differences in reductions in consumption with falling resources?
+* RQ2: To what extent can a single EU-wide approach be used, and with what time saving/information loss, at the level of the EU as a whole and at the individual country level? 
+* RQ3: How does the adaptive approach perform when looking at the individual countries separately (i.e. allowing ordering of items and adaptation approach to vary nationally)? Are the time saving/information loss trade-offs similar to those for the UK?
+
+We can do this for the 13-item whole population scale using multiple years (2014-18). With the child items, which is the focus here, we can only do this for 2014. This file covers exploratory analyses and main results.
+
+As the deprivation questions are (almost) all asked at the household level, the analysis here is on the basis of households rather than individuals. This is the level at which any time savings would be made. The one exception (the internet question which is asked of all adults) could presumably also be captured from the household respondent at the same time as the other questions asked of them.
+
+I use the term "EU" to refer to the countries covered here as a useful shorthand, although I appreciate this is rather loose since the analysis covers 31 countries (Norway is excluded), not the EU-28 as it was in 2014. 
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# NB - need to load ltm before dplyr or it masks 'select'
+pacman::p_load(vroom, ltm, ResourceSelection, lubridate, here, ggrepel, tidyverse)
+
+
+# notes
+# dfs:
+# - df_H/P - hhld/person data from EU SILC csvs
+# - silc - original data: country + year + lack items + dpvn (mdch) - 56k cases
+# - silc_cntry/silc_all - same + item ranks cntry/all ltm - 56k cases
+# - silc_cntry2/silc_all2 - lack, rank1 (whether in first i items), lack1[first i items] 
+#    + rank2/lack2 (first i+j items) + mdch_1/2 + grp1size/grp2size + mdch_adapt1/2 + qns_adapt1/2 - 503k
+# - other dfs related to the ltm models
+# 
+# depvn measures:
+# - mdch - no. items lacked
+# - mdch_1 - no. items lacked in first i items
+# - mdch_2 - no. items lacked in first i+j items
+# - mdch_adapt1 no. items lacked [adaptive scale, first i items]
+#    - if lack 1+ of first N items [mdch_1 > 0] then equal to mdch
+#    - if lack 0 of first N itmes then equal to zero
+# - mdch_adapt2 no. items lacked [adaptive scale, first i+j items]
+# - md - depvd/not (usually lack 3+ items)
+# - md_adapt1 - depvd/not 
+# - md_adapt2 - depvd/not 
+
+
+# settings for charts
+title.text.size <- 12
+axis.text.size <- 12
+
+
+# zip file location
+zip_file <- here("Cross 2004-20", "Data", "Cross.zip")
+
+# zip file structure
+file_structure <- unzip(zip_file, list = TRUE) 
+
+# country list
+country <- file_structure %>%
+  mutate(country = substr(Name, 7, 8)) %>%
+  group_by(country) %>%
+  summarise() %>%
+  ungroup() %>%
+  filter(nchar(country) == 2) %>%
+  pull(country)
+
+# list of countries in analytical dataset 
+# # - 31 (drop Norway)
+# country2 <- country[- match(c("NO"), country)]
+# - EU 27 - drop Nor + Switz, Iceland, Serbia and UK
+country2 <- country[- match(c("NO", "CH", "IS", "RS", "UK"), country)]
+
+# list of files for hhld data
+files_H <- file_structure %>%
+  filter(grepl("14H.csv", Name)) %>% # limit to 2014
+  pull(Name)
+
+# list of files for person data
+files_P <- file_structure %>%
+  filter(grepl("14P.csv", Name)) %>% # limit to 2014
+  pull(Name)
+
+# threshold for being 'deprived' - lacking N+ items
+depvn_threshold <- 3
+
+# option levels - select four options for detailed analysis
+option_levels <- c("4+10", "5+9", "6+8", "7+7")
+
+# output folder for figs
+dir_figs <- "Figs27"
+
+
+```
+
+
+# Reading data from original csv files
+Data for 2014 are read in from csv files within a zip file containing all countries and years. 
+
+Limit data to selected countries.
+
+```{r csv data, warning=FALSE, include=FALSE}
+
+## read 2014 data and combine into person-level file
+# read hhld and person data to separate files
+df_H <- vroom(map(files_H, ~ unz(zip_file, .x))) %>%
+  rename("year" = "HB010", 
+         "country" = "HB020") %>% 
+  filter(country %in% country2)
+
+df_P <- vroom(map(files_P, ~ unz(zip_file, .x))) %>%
+  rename("year" = "PB010", 
+         "country" = "PB020") %>%
+  mutate(HB030 = trunc(PB030/100)) %>% 
+  filter(country %in% country2)
+
+```
+
+
+# Make analytical dataset for child items
+
+The 12 child items (household or person respondent) and 5 household items (household respondent):
+
+1. Child: Some new (not second-hand) clothes [HD100 - clothes_ch]
+2. Child: Two pairs of properly fitting shoes [HD110 - shoes_ch]
+3. Child: Fresh fruits and vegetables daily [HD120 - fruit]
+4. Child: Meat, chicken, fish or vegetarian equivalent daily [HD140 - meat_ch]
+5. Child: Books at home suitable for the children’s age [HD150 - books]
+6. Child: Outdoor leisure equipment [HD160 - outdoor]
+7. Child: Indoor games [HD170 - indoor]
+8. Child: Regular leisure activities [HD180 - activities_ch]
+9. Child: Celebrations on special occasions [HD190 - celebration]
+10. Child: Invitation of friends to play and eat from time to time [HD200 - invitation]
+11. Child: Participation in school trips and school events that cost money [HD210 - school_trip]
+12. Child: Holiday [HD240 - holiday_ch]
+13. Household: Arrears [HS011/21/31 - arrears]
+14. Household: Home adequately warm [HH050 - warm]
+15. Household: Access to a car for private use [HS110 - car]
+16. Household: Replace worn-out furniture [HD080 - furniture]
+17. Adults in the household: Access to internet [PD080 - internet]
+
+Coding:
+
+* items 1-12 and 15-17 coded: 1 = Yes, have item; 2 = No, don't have - can't afford; 3 = No, don't have - other. These are recoded: 2 becomes 1/lack, can't afford; 1,3 become 0/other. 
+* item 14 ('warm') coded: 1 = Yes; 2 = No. This is recoded: 2 becomes 1/lack, can't afford; 1 become 0/other. 
+* item 13 (arrears) constructed from three qns, each coded: 1 - missed payment once; 2 - missed payment 2+; 3 - no missed payments. Any missed payment on any of the three is counted as depvn. 
+
+Flag variables for child items ("_F" suffix) coded: 
+
+* 1 = Filled
+* -1 = Missing
+* -2 = NA (no child between 1 and 15)
+
+In addition, flag for HD210 (school_trip): 
+
+* -4 = NA (no child attending school)
+
+BUT note that a number of countries seem to have miscoded, using -1 or -2 instead.
+
+HH050 ('warm'), HS110 ('car'), HD080 ('furniture'): 
+
+* 1 = Filled
+* -1 = Missing
+
+PD030 ('Internet') - may only be present for one member of hhld:
+
+* 1 = Filled
+* -1 = Missing
+* -3 = Not selected respondent
+
+HS011/21/31 (for 'arrears'): 
+
+* 1 = Filled
+* -1 = Missing
+* -2 = NA (outright owner/rent free; no utility bills; or no HP/loan payments)
+
+
+This section of code is where the base dataset (silc) is constructed for the rest of the analysis. Final rules: 
+
+* Remove Norway (small numbers, many missing one variable). 
+* Arrears: lots of missing values as items frequently 'not applicable' (e.g. own outright so no mortgage arrears, etc.). Adjust original variables (HS011/21/31) so 'NA' becomes 'not missing payment' (3).
+* School trip - set to 0 (not deprived) where no school-aged children
+* Otherwise, drop cases with any remaining missing values. 
+
+NB: With internet, if the household has no non-missing answers, the code returns '-Inf' (generating warning messages). Filter this v. small number of cases out. 
+
+Make analytical dataset (silc), adding count of items lacked (mdch). Report the proportion of cases dropped due to missing values for one or more deprivation items. 
+
+```{r analytical data, fig.height=10, fig.width=8, warning=FALSE}
+
+# vars to keep from csv files
+vars_ch <- c("year", "country", "HB030",
+             "HD080", "HD100", "HD110", "HD120", "HD140", "HD150", 
+             "HD160", "HD170", "HD180", "HD190", "HD200", "HD210", 
+             "HD220", "HD240",
+             "HH050", "HS011", "HS021", "HS031", "HS040", "HS050",
+             "HS060", "HS110",
+             "HD080_F", "HD100_F", "HD110_F", "HD120_F", "HD140_F", "HD150_F", 
+             "HD160_F", "HD170_F", "HD180_F", "HD190_F", "HD200_F", "HD210_F", 
+             "HD220_F", "HD240_F",
+             "HH050_F", "HS011_F", "HS021_F", "HS031_F", "HS040_F", "HS050_F",
+             "HS060_F", "HS110_F",
+             "PD020", "PD030", "PD050", "PD060", "PD070", "PD080",
+             "PD020_F", "PD030_F", "PD050_F", "PD060_F", "PD070_F", "PD080_F")
+
+# lack - list with item names - child (N = 17)
+lack <- c("clothes", "shoes", "fruit", "meat", "books", "outdoor", 
+              "indoor", "activities", "celebration", "invitation",
+              "school_trip", "holiday", "arrears", "warm", "car", 
+              "furniture", "internet")
+
+# other lists for lack
+lack1 <- paste0("lack1_", lack)
+lack2 <- paste0("lack2_", lack)
+lack_adapt1 <- paste0("lack_adapt1_", lack)
+lack_adapt2 <- paste0("lack_adapt2_", lack)
+
+# make list of vars for ranks
+rank <- paste0("rank_", lack)
+rank1 <- paste0("rank1_", lack)
+rank2 <- paste0("rank2_", lack)
+
+# combine person and hhld data, cut to relevant vars and to hhlds with children
+silc <- df_P %>%
+  left_join(df_H, by = c("year", "country", "HB030")) %>%
+  select(all_of(vars_ch)) %>%
+  filter(HD100_F != -2) 
+
+# make 'lack' vars and mean items lacked
+silc <- silc %>%
+  mutate(clothes = case_when(HD100 == 2 ~ 1, HD100 %in% c(1,3) ~ 0),
+         shoes = case_when(HD110 == 2 ~ 1, HD110 %in% c(1,3) ~ 0),
+         fruit = case_when(HD120 == 2 ~ 1, HD120 %in% c(1,3) ~ 0),
+         meat = case_when(HD140 == 2 ~ 1, HD140 %in% c(1,3) ~ 0),
+         books = case_when(HD150 == 2 ~ 1, HD150 %in% c(1,3) ~ 0),
+         outdoor = case_when(HD160 == 2 ~ 1, HD160 %in% c(1,3) ~ 0),
+         indoor = case_when(HD170 == 2 ~ 1, HD170 %in% c(1,3) ~ 0),
+         activities = case_when(HD180 == 2 ~ 1, HD180 %in% c(1,3) ~ 0),
+         celebration = case_when(HD190 == 2 ~ 1, HD190 %in% c(1,3) ~ 0),
+         invitation = case_when(HD200 == 2 ~ 1, HD200 %in% c(1,3) ~ 0),
+         school_trip = case_when(HD210 == 2 ~ 1, HD210 %in% c(1,3) ~ 0, 
+                                 HD210_F %in% c(-1,-2,-4) ~ 0),
+         holiday = case_when(HD240 == 2 ~ 1, HD240 %in% c(1,3) ~ 0),
+         HS011a = case_when(HS011_F == -2 ~ 3, TRUE ~ HS011), 
+         HS021a = case_when(HS021_F == -2 ~ 3, TRUE ~ HS021), 
+         HS031a = case_when(HS031_F == -2 ~ 3, TRUE ~ HS031), 
+         arrears = case_when((HS011a == 3 & HS021a == 3 & HS031a == 3) ~ 0,
+                             (HS011a %in% c(1,2) | HS021a %in% c(1,2) | HS031a %in% c(1,2)) ~ 1),
+         warm = case_when(HH050 == 2 ~ 1, HH050 %in% c(1,3) ~ 0),
+         car = case_when(HS110 == 2 ~ 1, HS110 %in% c(1,3) ~ 0),
+         furniture = case_when(HD080 == 2 ~ 1, HD080 %in% c(1,3) ~ 0),
+         internet_p = case_when(PD080 == 2 ~ 1, PD080 %in% c(1,3) ~ 0)) %>%
+  group_by(country, year, HB030) %>%
+  mutate(internet = max(internet_p, na.rm = TRUE)) %>%
+  ungroup() %>%
+  mutate(missing = rowSums(is.na(select(.,one_of(lack))))) %>%
+  group_by(country, year, HB030) %>%
+  slice_head() %>%
+  ungroup() %>%
+  filter(internet >= 0) %>%
+  select(-c("internet_p", "HS011a", "HS021a", "HS031a")) %>%
+  mutate(mdch = rowSums(across(clothes:internet))) %>%
+  select(country, year, all_of(lack), mdch, missing) 
+
+
+# PAPERSTAT - to make stat on dropped cases thru' missing 'lack' vars
+# missing is the % of cases with one or more 'lack' items missing
+temp <- silc %>%
+  group_by(country) %>%
+  summarise(missing_pct = 100 * mean(missing >= 1)) %>%
+  arrange(desc(missing_pct))
+head(temp)
+
+# take out missing cases and 'missing' col
+silc <- silc %>%
+  filter(missing == 0) %>%
+  select(-missing)
+  
+# order of countries by mean number items lacking (ascending)
+cntry_order <- silc %>%
+  group_by(country) %>%
+  summarise(mdch_mean = mean(mdch)) %>%
+  arrange(mdch_mean) %>%
+  pull(country)
+
+#for use with 'ALL' category as well
+cntry_order2 <- c(cntry_order, "ALL")
+
+# order of items by % lacking - all countries (ascending)
+item_order_pct <- silc %>%
+  select(all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(item) %>%
+  summarise(item_mean = mean(lack)) %>%
+  arrange(desc(item_mean)) %>%
+  pull(item)
+
+```
+
+Stacked bar charts, with number of items lacked, capped at 10. Countries ordered by average number of items lacked (here and throughout). Shows the huge divergence between countries. 
+
+```{r md, fig.height=16, fig.width=10}
+
+# plot number of depvns by country
+temp <- silc %>%
+  select(year, mdch) %>%
+  mutate(mdch = case_when(mdch > 10 ~ 10, TRUE ~ mdch)) %>%
+  group_by(year, mdch) %>%
+  summarise(n = n()) %>%
+  group_by(year) %>%
+  mutate(total = sum(n), 
+         pct = 100*n/total) %>%
+  mutate(country = "ALL")
+
+silc %>%
+  select(country, year, mdch) %>%
+  mutate(mdch = case_when(mdch > 10 ~ 10, TRUE ~ mdch)) %>%
+  group_by(country, year, mdch) %>%
+  summarise(n = n()) %>%
+  group_by(country, year) %>%
+  mutate(total = sum(n), 
+         pct = 100*n/total) %>%
+  rbind(temp) %>%
+  ggplot(aes(x = year, y = pct)) + 
+  geom_bar(aes(fill = factor(mdch, 
+                             labels = c(0:9, "10+"))), 
+           stat = "identity") +
+  facet_wrap(~ factor(country, levels = cntry_order2), 
+             ncol=7) +
+  scale_fill_brewer(palette = "Paired") +
+  theme(axis.text.x = element_blank())  +
+  labs(# title = "Deprivation levels by country", 
+       # subtitle = paste0("Countries ordered by depvn; '10' is '10+'"),
+       # caption = "EU-SILC 2014",
+        x = "", 
+        y = "Percent") +
+  theme(axis.ticks.x = element_blank()) +
+  theme(axis.text.x = element_blank()) +
+  theme(axis.title.x = element_blank()) +
+  theme(legend.text = element_text(size = axis.text.size)) +
+  theme(legend.title = element_text(size = title.text.size)) +
+  theme(axis.text.y = element_text(size = axis.text.size)) +
+  theme(axis.title.y = element_text(size = title.text.size, face = "bold")) +
+  theme(strip.text = element_text(size = title.text.size)) +
+  guides(fill=guide_legend(title="Items lacked", size = axis.text.size))
+
+
+# PAPERFIG 1
+ggsave(here(dir_figs, paste0("fig 1 - depvns.png")),
+       height = 10, width = 7.5)
+ggsave(here(dir_figs, paste0("fig 1 - depvns.tiff")),
+       device = "tiff",
+       height = 10, width = 7.5)
+
+
+```
+
+```{r md, fig.height=16, fig.width=10}
+
+# stats on lack nos items
+silc %>%
+  select(country, year, mdch) %>%
+  mutate(mdch = case_when(mdch > 10 ~ 10, TRUE ~ mdch)) %>%
+  group_by(country, year, mdch) %>%
+  summarise(n = n()) %>%
+  group_by(country, year) %>%
+  mutate(total = sum(n), 
+         pct = 100*n/total) %>% 
+  arrange(country, mdch)
+
+
+```
+
+Deprivation rates using different thresholds - lacking 3+ or 6+ items. 
+
+```{r md rates, fig.height=6, fig.width=10}
+
+# plot depvn rates by country
+silc %>%
+  select(country, mdch) %>%
+  mutate(mdch_3 = case_when(mdch >= 3 ~ 1, TRUE ~ 0),
+         mdch_6 = case_when(mdch >= 6 ~ 1, TRUE ~ 0)) %>%
+  group_by(country) %>%
+  summarise(depvd_3plus = 100*mean(mdch_3), 
+            depvd_6plus = 100*mean(mdch_6)) %>%
+  pivot_longer(c(depvd_3plus, depvd_6plus), names_to = "measure", values_to = "rate") %>%
+  ggplot(aes(x = factor(country, levels = cntry_order), 
+             y = rate)) + 
+  geom_bar(aes(fill = measure), stat = "identity", position = "dodge")  +
+  labs(title = "Deprivation rates - thresholds: lacking 3+ and 6+ items", 
+        subtitle = paste0("Countries ordered by depvn"),
+        caption = "EU-SILC 2014",
+        x = "Country", 
+        y = "Deprivation rate") +
+  guides(fill=guide_legend(title="Measure"))
+  
+```
+
+Next we look at the proportion of people in each country lacking each item. Countries ordered by average number of items lacked (low to high - so crudely richer to poorer), and items ordered by average number lacking (high to low). Use log scale (of "percent lack + 1" to remove negative values) so very low values clearer.
+
+We are looking here to see if there is at least a consistent ordering, i.e. a steady rise in the proportions lacking each item across the countries from richer to poorer. We see this in relation to most items but with some variations. 
+
+```{r countries, fig.height=18, fig.width=10}
+
+silc %>%
+  select(country, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(country, item) %>%
+  summarise(lack_pct = 100*mean(lack)) %>%
+  ggplot(aes(x = factor(country, levels = cntry_order), 
+             y = lack_pct+1)) +
+  geom_bar(aes(fill = country), stat = "identity") +
+  scale_y_log10() +
+  facet_wrap(~ factor(item, levels = item_order_pct), ncol=2) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  theme(legend.position="none")   +
+  labs(title = "Percent in each country lack each item - by item (log of percent + 1)", 
+        subtitle = paste0("Countries and items ordered"),
+        caption = "EU-SILC 2014",
+        x = "Country", 
+        y = "Percent lack item")
+  
+```
+
+
+Same thing but now items within countries - again on log scale. Looking for a steady drop across the items. 
+
+```{r items, fig.height=18, fig.width=10}
+
+silc %>%
+  select(country, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(country, item) %>%
+  summarise(lack_pct = 100*mean(lack)) %>%
+  ggplot(aes(x = factor(item, levels = item_order_pct), 
+             y = lack_pct+1)) +
+  geom_bar(aes(fill = item), stat = "identity") +
+  scale_y_log10() +
+  facet_wrap(~ factor(country, levels = cntry_order), ncol=3) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  theme(legend.position="none")   +
+  labs(title = "Percent in each country lack each item - by country (log of percent + 1)", 
+        subtitle = paste0("Countries and items ordered"),
+        caption = "EU-SILC 2014",
+        x = "Country", 
+        y = "Percent lack item")
+  
+```
+
+
+Same thing (items within countries) but on linear scale and with the whole set in one as well. This is just percent lacking (without addition of 1%). 
+
+* Striking how few people lack any items in the most affluent countries. 
+* In those cases, often just one or two items which dominate. 
+
+```{r items linear, fig.height=18, fig.width=10}
+
+temp <- silc %>%
+  select(all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(item) %>%
+  summarise(lack_pct = 100*mean(lack)) %>%
+  mutate(country = "ALL")
+
+silc %>%
+  select(country, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(country, item) %>%
+  summarise(lack_pct = 100*mean(lack)) %>%
+  rbind(temp) %>%
+  ggplot(aes(x = factor(item, levels = item_order_pct), 
+             y = lack_pct)) +
+  geom_bar(aes(fill = item), stat = "identity") +
+  facet_wrap(~ factor(country, levels = cntry_order2), ncol=3) +
+  theme(axis.text.x = element_text(angle = 90)) +
+  theme(legend.position="none")   +
+  labs(title = "Percent in each country lack each item - by item (linear scale)", 
+        subtitle = paste0("Countries and items ordered"),
+        caption = "EU-SILC 2014",
+        x = "Country", 
+        y = "Percent lack item")
+  
+```
+
+
+```{r items linear, fig.height=18, fig.width=10}
+
+#PAPERSTATS
+
+# % lack each item - Sweden
+silc %>%
+  select(country, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(country, item) %>%
+  summarise(lack_pct = 100*mean(lack)) %>% 
+  filter(country == "SE") %>% 
+  arrange(lack_pct)
+
+
+```
+
+
+```{r items linear, fig.height=18, fig.width=10}
+
+#PAPERSTATS
+
+# % lack each item - Bulgaria
+silc %>%
+  select(country, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(country, item) %>%
+  summarise(lack_pct = 100*mean(lack)) %>% 
+  filter(country == "BG") %>% 
+  arrange(lack_pct)
+
+
+```
+Boxplot of % lacking each item by country. This emphasises the variation between countries in terms of proportions lacking item. 
+
+```{r lack box, fig.height=8, fig.width=10}
+
+silc %>%
+  select(country, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(country, item) %>%
+  summarise(lack_pct = 100*mean(lack)) %>%
+  ggplot(aes(x = factor(item, levels = item_order_pct), 
+             y = lack_pct)) +
+  geom_boxplot() +
+  coord_flip() +
+  geom_jitter(position=position_jitter(0.1)) +
+  labs(title = "Percent in each country lacking each item", 
+        subtitle = paste0("Items ordered by percent lacking each"),
+        caption = "EU-SILC 2014",x = "item\n",
+       y = "\nPercent lack item") +
+  theme(axis.title=element_text(size=title.text.size, face="bold"),
+        axis.text=element_text(size=axis.text.size)) 
+
+```
+
+
+# Latent trait models (LTM) 
+
+## All countries in one model
+
+First we run the Latent Trait Model (LTM) on all the data. 
+
+One minor issue (not resolved here) is that this effectively gives greater 'weight' to countries that have larger survey samples (e.g. Italy or Poland). There is no weight function within 'ltm'. We could make some adjustment by randomly (re-)sampling within countries to balance numbers in relation to e.g. populations. But in the end, countries with larger samples have more potential for time saving so it makes sense to leave this unadjusted. 
+
+NB: 'ltm' can sometimes fail, giving an error message in which case we need to re-run the code. This is a function of the random starting point for each iteration. When using variable random start points, simply re-running usually resolves. Here the 'random' start points have been fixed by a csv file.
+
+Other times 'ltm' gives warnings ("Hessian matrix at convergence is not positive definite; unstable solution", sometimes with "glm.fit: fitted probabilities numerically 0 or 1 occurred"). In these cases, one or more items had large negative difficulty and Pr(x=1 | z=0) equal to 1. This suggests the solution identified is finding a local maxima rather than global maxima. Documentation suggests setting 'start.val' to "random" and running 10 iterations of each, selecting the iteration where log likeliehood is maximised. Here we use 20 iterations to be even more confident. 
+
+
+```{r ltm all, fig.height=6, fig.width=8}
+
+# all countries - 20 iterations for final models
+# - using fixed 'random' starting points to ensure reproducibility
+
+# empty dfs for results
+fit_list <- list()
+df_dffclt_all <- data.frame()
+df_info_all <- data.frame()
+df_loglik_all <- data.frame()
+
+# run ltm n times
+for (iter in 1:20) {
+  print(paste0("iteration: ",iter))
+  
+  # make ltm model for all and store in list
+  fit <- ltm(silc[lack] ~ z1, 
+             IRT.param = TRUE, 
+             start.val = "random")
+  
+  fit_list[[iter]] <- fit
+  
+  # capture diff and discrim
+  coeffs <- coef(fit, prob = TRUE) %>%
+    as_tibble() %>%
+    cbind(rn = row.names(coef(fit, prob = TRUE)), .) %>%
+    tibble::rowid_to_column("ID") %>%
+    mutate(iter = iter)
+  df_dffclt_all <- rbind(df_dffclt_all, coeffs)   # capture item difficulties
+  
+  # capture log.Lik
+  loglik <- data.frame(iter = iter,
+                       log.Lik = fit$log.Lik,
+                       conv = fit$convergence)
+  df_loglik_all <- rbind(df_loglik_all, loglik)
+  
+  # capture information by vigintiles for iteration
+  info <- list()
+  range <- list()
+  for (i in 1:20) {
+    lower <- qnorm((i-1)/20)
+    upper <- qnorm(i/20)
+    info_temp <- information(fit, c(lower, upper))
+    info <- c(info, info_temp[3])
+    range <- c(range, info_temp[4][1])
+  }
+  # convert to df
+  df_info <- data.frame(
+    centiles = seq(1,20),
+    info = unlist(info),  
+    matrix(unlist(range), nrow = length(range), byrow = TRUE)
+  )
+  # give centiles their range as labels
+  df_info$centiles <- factor(df_info$centiles, 
+                             levels = seq(1,20),
+                             labels = paste0(seq(0,95,5), "-", seq(5,100,5), "th"))
+  # make iteration variable and store in df_info_all
+  df_info$iter <- iter
+  df_info_all <- rbind(df_info_all, df_info)   # capture item difficulties
+}
+
+# tidy up
+rm(info_temp)
+rm(lower)
+rm(upper)
+rm(info)
+rm(range)
+
+# # check log.Lik for each model
+# df_loglik_all %>%
+#   ggplot(aes(x = iter, y = log.Lik)) +
+#   geom_bar(stat = "identity")
+
+# identify iteration with maximum log.Lik
+iter_best <- df_loglik_all %>%
+  filter(log.Lik == max(log.Lik)) %>%
+  pull(iter)
+
+# then take best iteration for later analysis
+df_dffclt_all <- df_dffclt_all %>%
+  filter(iter == iter_best[1]) %>%
+  select(-iter) %>%
+  mutate(Dffclt_prob = round(pnorm(Dffclt)*100,1),
+         item = as.character(rn), 
+         Dffclt_rank = rank(Dffclt))
+
+df_info_all <- df_info_all %>%
+  filter(iter == iter_best[1]) %>%
+  select(-iter) %>%
+  mutate(country = "ALL")
+
+df_loglik_all <- df_loglik_all %>%
+  filter(iter == iter_best[1]) %>%
+  select(-iter)
+
+# join % lack with diff/dscrm
+df_lack_diff_all <- silc %>%
+  select(all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(item) %>%
+  summarise(lack_pct = 100*mean(lack)) %>%
+  left_join(df_dffclt_all, by = c("item")) %>%
+  mutate(country = "ALL")
+
+
+
+```
+
+Here we plot the Test Information Curve, re-calculated to show percentiles. As with the UK work, this shows a huge proportion of information (more than half) is in the bottom 5% of the distribution. Any efforts to identify items with lower difficulties would improve the situation, particularly in less deprived countries. 
+
+```{r ltm all TIC, fig.height=6, fig.width=8}
+
+# # dot plots - difficulty as z score
+# df_dffclt_all %>%
+#   ggplot(aes(x = Dffclt)) + 
+#   geom_dotplot(binwidth = 0.04, method = "histodot") +
+#   labs(x = "Difficulty (std deviations)")
+# 
+# # dot plots - difficulty as pbility
+# df_dffclt_all %>%
+#   ggplot(aes(x = Dffclt_prob)) +
+#   geom_dotplot(binwidth = .5, method = "histodot")  +
+#   labs(x = "Difficulty (probability)")
+# 
+# # Dffclt vs Dscrmn
+# df_dffclt_all %>%
+#   ggplot(aes(x = Dffclt, y = Dscrmn)) +
+#   geom_point() +
+#   geom_text(aes(label = item), hjust = 0, vjust = 0) +
+#   labs(x = "Difficulty", y = "Discrimination")
+
+# 
+# # line chart of info
+# df_info_all %>%
+#   ggplot(aes(x = as.numeric(centiles),
+#              y = info)) +
+#   geom_line(stat = "identity") +
+#   scale_fill_brewer(palette = "Spectral") +
+#   labs (y = "Percent of information",
+#         x = "Vigintiles") +
+#   scale_y_continuous(labels = scales::percent_format(accuracy=2)) +
+#   theme(axis.title=element_text(size=title.text.size, face="bold"),
+#         axis.text.y=element_text(size=axis.text.size),
+#         axis.text.x = element_text(angle=90, vjust=0.5, size=axis.text.size))
+
+# bar chart of info
+df_info_all %>%
+  ggplot(aes(x = centiles,
+             y = info)) +
+  geom_bar(stat = "identity") +
+  scale_fill_brewer(palette = "Spectral") +
+  labs (title = "Test Information by percentiles", 
+        caption = "EU-SILC 2014",
+        y = "Percent of information",
+        x = "Percentile range") +
+  scale_y_continuous(labels = scales::percent_format(accuracy=2)) +
+  theme(legend.position = "right",
+        axis.title=element_text(size=title.text.size, face="bold"),
+        axis.text.y=element_text(size=axis.text.size),
+        axis.text.x = element_text(angle=90, vjust=0.5, size=axis.text.size)) 
+
+```
+
+## Latent trait models for individual countries
+
+Now we produce LTMs for each country, again using multiple iterations and selecting the best fit as most likely to represent the global maximum. 
+
+About half the time, Finland generates warning: "Hessian matrix at convergence is not positive definite; unstable solution." But apart from occasional outlier solutions, most are pretty similar. 
+
+```{r ltm cntry, fig.height=15, fig.width=8}
+
+# separate models for each country
+
+# empty dfs for results
+df_dffclt_cntry <- data.frame()
+df_info_cntry <- data.frame()
+df_loglik_cntry <- data.frame()
+
+# run ltm 20 times for each country using 'random' starting points for final models
+for (iter in 1:20) {
+  print(paste0("iteration: ", iter))
+  
+  # loop through countries, storing coeffs and info
+  for (cntry in country2) {
+    print(paste0("country: ", cntry))
+    
+    # make ltm model for cntry
+    fit <- ltm(silc[silc$country == cntry, lack] ~ z1, 
+               IRT.param = TRUE, 
+               start.val = "random")
+    
+    # capture diff and discrim for year
+    coeffs <- coef(fit, prob = TRUE) %>%
+      as_tibble() %>%
+      cbind(rn = row.names(coef(fit, prob = TRUE)), .) %>%
+      tibble::rowid_to_column("ID") %>%
+      mutate(country = cntry, 
+             iter = iter)
+    df_dffclt_cntry <- rbind(df_dffclt_cntry, coeffs)   # capture item difficulties
+  
+    # capture log.Lik
+    loglik <- data.frame(country = cntry, 
+                         iter = iter,
+                         log.Lik = fit$log.Lik,
+                         conv = fit$convergence)
+    df_loglik_cntry <- rbind(df_loglik_cntry, loglik)
+    
+    # capture information by vigintiles for year
+    info <- list()
+    range <- list()
+    for (i in 1:20) {
+      lower <- qnorm((i-1)/20)
+      upper <- qnorm(i/20)
+      info_temp <- information(fit, c(lower, upper))
+      info <- c(info, info_temp[3])
+      range <- c(range, info_temp[4][1])
+    }
+    # convert to df
+    df_info <- data.frame(
+      centiles = seq(1,20),
+      info = unlist(info),  
+      matrix(unlist(range), nrow = length(range), byrow = TRUE)
+    )
+    # give centiles their range as labels
+    df_info$centiles <- factor(df_info$centiles, 
+                                   levels = seq(1,20),
+                                   labels = paste0(seq(0,95,5), "-", seq(5,100,5), "th"))
+    # make year variable and store in df_info_yr
+    df_info$country <- cntry
+    df_info$iter <- iter
+    df_info_cntry <- rbind(df_info_cntry, df_info)   # capture item difficulties
+  }
+}
+
+# tidy up
+rm(info_temp)
+rm(lower)
+rm(upper)
+rm(info)
+rm(range)
+
+# # check variation between models in log.Lik
+# # - most v small, except Finland - but all have some range
+# df_loglik_cntry %>%
+#   group_by(country) %>%
+#   summarise(range = max(log.Lik) - min(log.Lik)) %>%
+#   arrange(desc(range))
+
+# identify iteration with maximum log.Lik
+iter_best <- df_loglik_cntry %>%
+  group_by(country) %>%
+  filter(log.Lik == max(log.Lik)) %>%
+  select(country, iter) %>%
+  rename(iter_best = iter) %>%
+  arrange(country)
+
+# reduce model outputs to best fit ones only
+df_dffclt_cntry <- df_dffclt_cntry %>%
+  left_join(iter_best, by = "country") %>%
+  filter(iter == iter_best) %>%
+  select(-c(iter, iter_best)) %>%
+  arrange(country)
+
+# reduce model outputs to best fit
+df_info_cntry <- df_info_cntry %>%
+  left_join(iter_best, by = "country") %>%
+  filter(iter == iter_best) %>%
+  select(-c(iter, iter_best)) %>%
+  arrange(country)
+
+# make probability from Z score for Difficulty, item and rank within country
+df_dffclt_cntry <- df_dffclt_cntry %>%
+  mutate(Dffclt_prob = round(pnorm(Dffclt)*100,1),
+         item = as.character(rn)) %>%
+  group_by(country) %>%
+  mutate(Dffclt_rank = rank(Dffclt))
+
+# join % lack with diff/dscrm
+df_lack_diff_cntry <- silc %>%
+  select(country, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(country, item) %>%
+  summarise(lack_pct = 100*mean(lack)) %>%
+  left_join(df_dffclt_cntry, by = c("country", "item"))
+
+# item ordering by diff for factor (with number)
+item_order_diff <- df_dffclt_all %>%
+  arrange(Dffclt_rank) %>%
+  mutate(Dffclt_rank2 = paste0(Dffclt_rank, ": ", item)) %>%
+  select(Dffclt_rank2) %>%
+  pull()
+
+# item ordering by diff for factor (with number)
+item_order_diff2 <- df_dffclt_all %>%
+  arrange(Dffclt_rank) %>%
+  select(item) %>%
+  pull()
+
+df_dffclt_cntry <- df_dffclt_cntry %>%
+  left_join(df_dffclt_all[c("item", "Dffclt_rank")], by = c("item"), 
+            suffix = c("", "_all")) %>%
+  mutate(Dffclt_rank_all2 = factor(paste0(Dffclt_rank_all, ": ", item),
+                                   ordered = TRUE, 
+                                   levels = item_order_diff))
+
+# make correlations and text for later
+corr_ranks <- df_dffclt_cntry %>%
+  group_by(country) %>%
+  summarise(corr = cor(Dffclt_rank, Dffclt_rank_all, 
+                       method = "spearman")) %>%
+  mutate(corr_text = paste0("Rho=\n",round(corr,2)))
+
+
+
+```
+
+
+This boxplot of item difficulty within each country shows the huge divergence between countries but not necessarily the ordering. (NB some points appear to be doubles because plotted both by boxplot as outliers and by geom_jitter.) 
+
+One issue this reveals is that there is one country (Iceland) where difficulty for 'school_trip' is 0 (in percentile terms), i.e. everyone is expected to lack this item. Further exploration (see earlier analysis) showed that very few people in Iceland lack this item and those that do do not tend to lack many other items. This indicates that it is not functioning well as a deprivation item. 
+
+```{r ltm cntry box, fig.height=6, fig.width=8}
+
+# boxplots - diff (pbility) by cntry
+df_dffclt_cntry %>%
+  ggplot(aes(x=reorder(rn, Dffclt, FUN = median),
+             y=Dffclt_prob)) + 
+  geom_boxplot(aes(fill = rn)) +
+  coord_flip() +
+  geom_jitter(position=position_jitter(0.2)) +
+  labs (title = "Item difficulties by item - separate country LTMs",
+        x = "item\n",
+        y = "\nitem difficulty within each country\n(percentile scale)") +
+  theme(legend.position = "none",
+        axis.title=element_text(size=title.text.size, face="bold"),
+        axis.text=element_text(size=axis.text.size))
+
+# # case where difficulty is zero
+# df_dffclt_cntry %>%
+#   filter(Dffclt_prob < 1)
+
+```
+
+If we compare item difficulty (converted to probability) vs the proportion lacking an item, we expect to see a negative relationship in general: items with the highest difficulty indicating the highest deprivation tend to be lacked by few people.
+
+* For more affluent countries, the clustering of points in the bottom right corner of the chart (high difficulty/low percentage lacking) is clear. 
+* In Iceland, again, there is an issue with 'school trips'. With most of the items which are lacked by few people, people who lack that item tend to lack several other items. With 'school trips' in Iceland, those who lack that item tend to lack very few other items (see other workbook for more detailed exploration). 
+
+
+```{r ltm cntry diff vs lack, fig.height=18, fig.width=10}
+
+# difficulty vs Percent lack - years
+df_lack_diff_cntry %>%
+  rbind(df_lack_diff_all) %>%
+  ggplot(aes(x = Dffclt_prob, y = lack_pct)) +
+  geom_point() +
+  facet_wrap(~ factor(country, levels = cntry_order2), ncol=4) +
+  labs(x = "Difficulty", y = "Percent lack")
+
+
+```
+
+
+Plotting test information curves by vigintiles (rather than z-scores) reinforces how much of the information from the deprivation scale is concentrated in the most deprived 5% of the population in the more affluent countries. In all but the last six countries, more than half the total test information is in the last 5% of the population. 
+
+```{r ltm cntry TIC, fig.height=16, fig.width=10}
+
+# information by z score and by vigintiles - most recent year
+# - 'fit' holds results for most recent year
+df_info_cntry %>%
+  rbind(df_info_all) %>%
+  ggplot(aes(x = centiles, y = info)) +
+  geom_bar(stat = "identity") + 
+  facet_wrap(~ factor(country, levels = cntry_order2), ncol=4) +
+  theme(axis.text.x = element_text(angle = 90))
+  
+
+```
+
+
+## Item ordering in each country
+
+Here we address the first RQ: 
+
+* RQ1: To what extent is the ordering of items similar across the countries of the EU? Do national/cultural variations lead to differences in reductions in consumption with falling resources? 
+
+The first figure shows the correlations between rank order within country and order for all countries (Spearman rank correlation). 
+
+* Iceland is the main outlier here, with no correlation
+* Of the affluent countries, Finland is lowest. 
+* Several Central & East European countries also relatively low (below 0.5): Estonia, Romania, Bulgaria, Czech Republic. 
+
+```{r rank order corr, fig.height=6, fig.width=8}
+
+# correlations order by country deprivation
+corr_ranks %>%
+  ggplot(aes(x = factor(country, levels = cntry_order), 
+             y = corr)) +
+  geom_bar(stat = "identity") + 
+  geom_hline(yintercept = 0.5, linetype = "dashed")
+  labs (title = "Spearman rank correlation of item difficulty within country vs EU-wide", 
+        subtitle = "Countries ordered by deprivation",
+        caption = "EU-SILC 2014, unweighted.",
+        x = "Country", 
+        y = "Spearman's Rho")
+  
+
+```
+
+
+For more detail, we plot country item order against overall item order. We see there is more similarity between items with lower difficulty. For the adaptive approach, it is these items which are most important. 
+
+* There are only three countries that don't have three of the 'top four' items from EU-wide model in the 'top four' within their national model: Luxembourg, Estonia and Slovakia. 
+* IS (Iceland) - no correlation overall but still has 3 of the EU-wide top four in its top four.
+* SK (Slovakia) - weak correlation but 'arrears' in particular seems different - much higher difficulty on the national model. CZ, LT, RO and BG similar. It is unclear whether this reflects cultural or contextual differences (people prioritise avoidance of arrears over other consumption to much greater extent? more limited opportunities to borrow?) or issues in question wording or coding. 
+
+
+```{r rank order scatter, fig.height=16, fig.width=10}
+
+# facet plot - rank within country vs rank overall
+df_dffclt_cntry %>%
+  ggplot(aes(x=Dffclt_rank_all2, y=Dffclt_rank)) +
+  geom_point() + 
+  geom_abline(aes(intercept = 0, slope = 1), linetype = "dashed") +
+  facet_wrap(~ factor(country, levels = cntry_order), ncol=4) +
+  geom_text(data = corr_ranks, 
+            x = 2, y = 16, 
+            aes(label = corr_text), 
+            size = 2.5) +
+  labs (#title = "Item difficulty within country vs all countries", 
+        #subtitle = "Countries ordered by deprivation; showing Spearman rank correlation",
+        #caption = "EU-SILC 2014, unweighted. N = 55,906",
+        x = "\nItems Ordered by Difficulty - EU-wide LTM", 
+        y = "Item Rank Order by Difficulty - country-specific LTM\n") +
+  theme(axis.text.x = element_text(size = axis.text.size * 0.8)) +
+  theme(axis.text.y = element_text(size = axis.text.size)) +
+  theme(axis.title = element_text(size = title.text.size, face = "bold")) +
+  theme(strip.text = element_text(size = title.text.size)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.25)) +
+  theme(legend.position="none")   
+
+# PAPERFIG 2
+ggsave(here(dir_figs, paste0("fig 2 - item diff - country vs all.png")),
+       height = 12, width = 7)
+ggsave(here(dir_figs, paste0("fig 2 - item diff - country vs all.tiff")),
+       device = "tiff",
+       height = 12, width = 7)
+
+```
+
+We can re-cast the previous data by item, rather than by country. In contrast to the earlier boxplot which looked at item difficulties, here we look at rank order. 
+
+* First two items (furniture and holiday) are consistently highly ranked (i.e. among the first items to be lacked). 
+* Next two items (arrears and activities) appear high on rankings in most countries but also have a tail of countries where they appear much lower. Invitation is similar. 
+* With warm and car, there is more general variation. 
+
+
+
+```{r rank order box, fig.height=6, fig.width=8}
+
+# facet plot - rank within country vs rank overall
+df_dffclt_cntry %>%
+  ggplot(aes(x=factor(item, levels = item_order_diff2), y=Dffclt_rank)) +
+  geom_boxplot() + 
+  coord_flip() +
+  geom_jitter(position=position_jitter(0.2)) +
+  labs (title = "Variations in item ranks between countries", 
+        subtitle = "Items ordered by difficulty on EU-wide model",
+        caption = "EU-SILC 2014, unweighted. N = 55,906",
+        x = "Items (ordered by difficulty)", 
+        y = "Item rank within country")
+
+# ggsave(here(dir_figs, paste0("item diff - country vs all.png")),
+#        height = 16, width = 10)
+
+```
+
+
+
+# One-stage adaptive approach using single EU LTM
+
+We start with simple one-stage adaptive approach:  
+
+* We use a single EU LTM for all countries to order items by difficulty. 
+* We take the first N items (with N = 3:9), and we stop asking questions if people lack none of the items in this first group. 
+
+The figure below takes the people who lack none of the first N items, and shows how many items they lack on the full scale. 
+
+* Of the people who lack none of the first N items, the majority in EVERY country lack no other items either even when we only use the first 3 items. In most countries, it is the great majority. 
+* With only limited exceptions (mainly Romania and Bulgaria), very few people who lack none of the first N items would be regarded as deprived on the full scale (lacking 3+ items). 
+
+```{r miss mdch all, fig.height=16, fig.width=10}
+
+# from EU-wide model, make rank of items, spread and 
+#  re-order to match hhld-level data in df, silc
+df_rank_all <- df_dffclt_all[c("item", "Dffclt_rank")] %>%
+  pivot_wider(names_from = item, values_from = Dffclt_rank)
+
+# change names in df_rank_all
+colnames(df_rank_all) <- c(rank)
+
+# add rank order of items from EU-wide LTM to hhld level data
+silc_all <- silc 
+silc_all[rank] <- df_rank_all
+
+# ordering for options
+option_order <-  data.frame(grp2size = rep(2:10, 9), 
+                grp1size = rep(2:10, each = 9)) %>%
+  mutate(option = paste0(grp1size, "+", grp2size)) %>%
+  pull(option)
+
+
+## silc-all2 - version with depvn on first i + j items
+# i - no of items in first group
+# j - no of items in second group
+
+silc_all2 <- data.frame()
+for (j in 3:14) {
+  for (i in 3:9) {
+    
+    if(i+j > 17) next
+    
+    temp <- silc_all
+    
+    # rank1 - rank if rank <= i (grp1size), else 0 [0:1]
+    temp[rank1] <- temp[rank] * (temp[rank] <= i)
+    # lack1 - if lack item in first i, equal to rank, else 0 [0:i]
+    temp[lack1] <- temp[lack] * temp[rank1]
+    # count items lacking in first i [0:i]
+    temp$mdch_1 <- rowSums(temp[lack1] >= 1)
+    # lack_adapt1 - items lacking on 1-stage adaptive [0:1]
+    # - where lack 1+ in first i, same as original (no stopping)
+    # - otherwise 0 (none in first i, so stop so none in rest) 
+    # - this doesn't need separate line in calculation
+    temp[lack_adapt1] <- temp[lack] * (temp$mdch_1 >= 1)     
+    # mdch_adapt1 - no. items lacking on adaptive 1 [0:17]
+    # count of adaptive one-stage 
+    temp$mdch_adapt1 <- rowSums(temp[lack_adapt1])          
+    # grp1size
+    temp$grp1size <- i
+    # qns_adapt1 - no. qns asked on adaptive 1
+    # i if lack none in first i [stop], else 17 [no stop]
+    temp$qns_adapt1 <- temp$grp1size * (temp$mdch_1 == 0) + 
+                        17 * (temp$mdch_1 >= 1)        
+    
+    # rank2 - rank if rank <= i+j (grp2size), else 0 [0:i+j]
+    temp[rank2] <- temp[rank] * (temp[rank] <= i+j)
+    # lack2 - rank if lack item in first i+j, else 0  [0:i+j]
+    temp[lack2] <- temp[lack] * temp[rank2]
+    # count items lacking in first i+j [0:i+j]
+    temp$mdch_2 <- rowSums(temp[lack2] >= 1)
+    # lack_adapt2 - items lacking on 2-stage adaptive [0:1]
+    #  mdch_1 == 0 then stop at first stage - count lack1's
+    #  mdch_1 > 0 but mdch_2 <=1 - count lack2's
+    #  mdch_1 >0 and mdch_2 >1 - count all lacks
+    temp[lack_adapt2] <- (temp[lack1] > 0)  * (temp$mdch_1 == 0) +                   
+                          (temp[lack2] > 0) * (temp$mdch_1 > 0 & temp$mdch_2 <= 1) +  
+                          (temp[lack] > 0)  * (temp$mdch_1 > 0 & temp$mdch_2 > 1)     
+    # mdch_adapt2 - no. items lacking on adaptive 2
+    temp$mdch_adapt2 <- rowSums(temp[lack_adapt2])
+    # grp2size
+    temp$grp2size <- i+j
+    # qns_adapt2 - no. qns asked on adaptive 2
+    temp$qns_adapt2 <- temp$grp1size * (temp$mdch_1 == 0) + 
+                        temp$grp2size * (temp$mdch_1 > 0 & temp$mdch_2 <= 1) +
+                         17 * (temp$mdch_1 > 0 & temp$mdch_2 > 1)
+    
+    silc_all2 <- silc_all2 %>%
+      rbind(temp)
+    
+  }
+}
+
+silc_all2 <- silc_all2 %>%
+  mutate(option = factor(paste0(grp1size, "+", (grp2size-grp1size)),
+                         levels = option_order))
+
+silc_all2 %>%
+  filter(mdch_1 == 0) %>%
+  group_by(country, grp1size, mdch) %>%
+  summarise(mdch_n = n()) %>%
+  group_by(country, grp1size) %>%
+  mutate(n = sum(mdch_n),
+         mdch_pct = 100 * mdch_n/n, 
+         mdch2 = factor(case_when(mdch > 8 ~ 8, 
+                           TRUE ~ mdch))) %>%
+  ggplot(aes(x = grp1size, y = mdch_pct)) +
+  geom_bar(aes(fill =  mdch2), stat = "identity", position = "stack") + 
+  facet_wrap(~ factor(country, levels = cntry_order),
+             ncol=4) +
+  scale_fill_brewer(palette = "Paired") + 
+  scale_x_continuous(breaks = 2:10) +
+  # coord_cartesian(ylim = c(0,10)) +
+  labs (title = "Number of items lacked for those NOT lacking any of first N items", 
+        subtitle = "Countries ordered by deprivation; Using single LTM for EU",
+        caption = "EU-SILC 2014",
+        x = "Number of items in initial group", 
+        y = "Percent of cases")  +
+  guides(fill=guide_legend(title="No. items lacked"))
+  
+```
+
+
+Then we can look at the proportion of people 'deprived' who would be missed by this very simple approach - as previously. 
+
+* If we use a very small initial group (3-4 items, e.g.), we do miss a small minority of deprived cases but less than 5% in all countries.
+* Once we use groups of 5+ items, losses are very small, even in countries with relatively high levels of deprivation. 
+* SK (Slovakia) a bit of a standout for the way that the proportion missed falls only slowly as the number of items used rises. Looking at earlier figure on correlations in ordering, there is an issue with the 'arrears' variable which is ranked 3rd on EU-wide model but 16th on the SK model.  
+
+```{r miss depvd all, fig.height=16, fig.width=10}
+
+temp <- silc_all2 %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         md_adapt1 = case_when(mdch_adapt1 >= depvn_threshold ~ 1,
+                               mdch_adapt1 < depvn_threshold ~ 0)) %>%
+  filter(md == 1) %>%
+  group_by(grp1size) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt1)/n())) %>%
+  mutate(country = "ALL")
+
+silc_all2 %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         md_adapt1 = case_when(mdch_adapt1 >= depvn_threshold ~ 1,
+                               mdch_adapt1 < depvn_threshold ~ 0)) %>%
+  filter(md == 1) %>%
+  group_by(country, grp1size) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt1)/n())) %>%
+  rbind(temp) %>%
+  ggplot(aes(x = grp1size, y = md_miss_pct)) +
+  geom_line() + 
+  facet_wrap(~ factor(country, levels = cntry_order2),
+             ncol=4) +
+  scale_x_continuous(breaks = 3:9) +
+  coord_cartesian(ylim = c(0,5)) +
+  labs (title = "Percent of deprived cases missed using simple adaptive approach with N items", 
+        subtitle = "Countries ordered by deprivation; Using single LTM for EU",
+        caption = "EU-SILC 2014",
+        x = "Number of items in initial group", 
+        y = "Percent of deprived cases 'missed'") 
+
+```
+
+As previous but comparing across countries. 
+
+* With four items in the initial group, we miss 2.3% of the deprived in Slovakia and just over 1% in Bulgaria. In other countries, it is less than 1%. 
+* By the time we have six items in the initial group, only Slovakia is above 1%. With nine items, no country is above 0.5%. 
+
+```{r miss depvd grp1size all, fig.height=16, fig.width=8}
+
+silc_all2 %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         md_adapt1 = case_when(mdch_adapt1 >= depvn_threshold ~ 1,
+                               mdch_adapt1 < depvn_threshold ~ 0)) %>%
+  filter(md == 1) %>%
+  group_by(country, grp1size) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt1)/n())) %>%
+  ggplot(aes(x = factor(country, levels = cntry_order), 
+             y = md_miss_pct,
+             group = grp1size)) +
+  geom_point() + 
+  geom_line(colour = "darkblue") + 
+  facet_wrap(~ grp1size, ncol=1) +
+  coord_cartesian(ylim = c(0,5)) +
+  labs (title = "Percent of deprived cases missed using simple adaptive approach with N items", 
+        subtitle = "Ordered by deprivation; Using single LTM for EU; NB that y-axis truncated",
+        caption = "EU-SILC 2014",
+        x = "Number of items in initial group", 
+        y = "Percent of deprived cases 'missed'") 
+
+```
+
+Again as previously, we can look at the time saving vs information loss trade off. 
+
+* As before, information losses (% of deprived cases missed) are very small, even when using a relatively small initial set of items (N = 4 or 5). 
+* Time savings decline as countries become more deprived, as there are fewer cases where questioning would stop. 
+
+
+```{r save miss all, fig.height=16, fig.width=10}
+
+silc_all2 %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         md_adapt1 = case_when(mdch_adapt1 >= depvn_threshold ~ 1,
+                               mdch_adapt1 < depvn_threshold ~ 0)) %>%
+  group_by(country, grp1size) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt1))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(country, grp1size) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt1)/n()),
+            saving = mean(saving)) %>%
+  ggplot(aes(x = saving, y = md_miss_pct)) +
+  geom_point(aes(shape = factor(grp1size))) + 
+  scale_shape_manual(values = 2:10) +
+  geom_line() + 
+  facet_wrap(~ factor(country, levels = cntry_order),
+             ncol=4) +
+  coord_cartesian(xlim = c(10, 75), ylim = c(0,6)) +
+  labs (title = "% deprived cases missed vs time saved using simple adaptive approach with N items", 
+        subtitle = "Countries ordered by deprivation; Using single LTM for EU",
+        caption = "EU-SILC 2014",
+        x = "Saving", 
+        y = "Percent of deprived cases 'missed'")  +
+  guides(fill=guide_legend(title="Items (N)"))
+
+
+# ggsave(here(dir_figs, paste0("miss v save - cntry ltm.png")),
+#        height = 16, width = 10)
+```
+
+
+
+
+Lastly, we can produce summaries for the whole EU, looking at how the trade-off changes if we pick a different threshold for deprivation. 
+
+* Information losses are less if we look at more deprived groups (e.g. those lacking 6+ items, rather than 3+ items). 
+* using the '3+' threshold therefore represents a tougher test for our approach. 
+
+
+```{r save miss all levels, fig.height=6, fig.width=8}
+
+# cycle through range of thresholds of depvn
+# - calc saving and % of depvd missed for whole EU in each case
+temp2 <- data.frame()
+for (i in 3:8) {
+  temp <- silc_all2 %>%
+    mutate(md = case_when(mdch >= i ~ 1,
+                          mdch < i ~ 0),
+           md_adapt1 = case_when(mdch_adapt1 >= i ~ 1,
+                                 mdch_adapt1 < i ~ 0)) %>%
+    group_by(grp1size) %>%
+    summarise(md_sum = sum(md), 
+              md_adapt1_sum = sum(md_adapt1),
+              stop_pct = sum(mdch_1 == 0)/n()) %>%
+    mutate(md_miss_pct = 100 * (1 - md_adapt1_sum/md_sum),
+           saving = 100 * stop_pct * (17 - grp1size)/17,
+           depvn_threshold = i)
+  temp2 <- temp2 %>%
+    rbind(temp)
+}
+
+# # stats for text
+# round(temp2$saving[temp2$grp1size == 4 & temp2$depvn_threshold == 3],0)
+# round(temp2$md_miss_pct[temp2$grp1size == 4 & temp2$depvn_threshold == 3],2)
+# round(temp2$saving[temp2$grp1size == 6 & temp2$depvn_threshold == 3],0)
+# round(temp2$md_miss_pct[temp2$grp1size == 6 & temp2$depvn_threshold == 3],2)
+# round(temp2$saving[temp2$grp1size == 4 & temp2$depvn_threshold == 6],0)
+# round(temp2$md_miss_pct[temp2$grp1size == 4 & temp2$depvn_threshold == 6],2)
+
+temp2 %>%
+  ggplot(aes(x = saving, y = md_miss_pct)) +
+  geom_point(aes(shape = factor(grp1size))) + 
+  labs(shape = "Items (N)") +
+  scale_shape_manual(values = 2:10) +
+  geom_line(aes(colour = factor(depvn_threshold))) + 
+  labs(colour = "Depvn threshold") +
+  coord_cartesian(xlim = c(20, 50), ylim = c(0,2)) +
+  labs (title = "% missed vs time saved - different deprivation thresholds", 
+        subtitle = "Using single LTM for EU and all countries in one go",
+        caption = "EU-SILC 2014",
+        x = "Saving", 
+        y = "Percent of deprived cases 'missed'") 
+
+# ggsave(here(dir_figs, paste0("miss v save - EU.png")),
+#        height = 6, width = 8)
+```
+
+Summarising results from figure above: 
+
+* With four items in the initial group and a deprivation threshold of lacking 3+ items, we have a time saving of `r round(temp2$saving[temp2$grp1size == 4 & temp2$depvn_threshold == 3],0)`% and lose just `r round(temp2$md_miss_pct[temp2$grp1size == 4 & temp2$depvn_threshold == 3],1)`% of deprived cases. 
+* With fewer than four items in the initial group, information losses rise rapidly. With more than four items, they improve slowly. With six items in the initial group, time savings are still `r round(temp2$saving[temp2$grp1size == 6 & temp2$depvn_threshold == 3],0)`% and just `r round(temp2$md_miss_pct[temp2$grp1size == 6 & temp2$depvn_threshold == 3],2)`% of deprived cases are missed.  
+* If we look at higher deprivation thresholds, then time savings are greater and information losses less - the method works better and better, in other words. Looking at a threshold of lacking 6+ items and using four items in the intial group, we can save `r round(temp2$saving[temp2$grp1size == 4 & temp2$depvn_threshold == 6],0)`% of the survey time and lose just `r round(temp2$md_miss_pct[temp2$grp1size == 4 & temp2$depvn_threshold == 6],2)`% of deprived cases. 
+
+
+# Two-stage adaptive approach using single EU LTM
+
+The next step is to extend the adaptive approach using two groups or stages. There is more flexibility here as we can use groups of different sizes at each stage. We could also use different thresholds or rules for stopping at each stage. Experimentation in the earlier document suggests this does not improve the method (information losses quickly increase which is likely to be unacceptable) so we do not pursue this here. 
+
+The approach here covers all the useful permutations of group sizes: starting with 3 to 9 items in the first group and then with 3 to N items in the second group (up to a total of 17 across the two groups). The figure below groups them by the number in the first group. The last point in each line (bottom left) is equivalent to doing the one-stage measure discussed above (i.e. the case when the second group covers all the items not covered by the first group). 
+
+We are primarily interested in the bottom/right hand boundary of the options. 
+
+* With three items in the first group, the proportion of deprived cases missed falls rapidly as the number of items in the second stage increases up to eight, and with relatively little penalty in terms of reduced time saving (the '3+8' point on the Figure). 
+* Then there is a succession of options which still show progress in terms of reducing cases missed but with slightly greater reductions in time savings, up to the "4+10" point. 
+* After this, there are smaller gains in terms of cases missed, but more rapid losses of time saved. 
+
+```{r 2stage all, fig.height=6, fig.width=8}
+
+silc_all2 %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0),
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(grp1size, grp2size) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(grp1size, grp2size) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  ggplot(aes(x = saving, y = md_miss_pct)) +
+  geom_point(aes(shape = factor(grp2size - grp1size))) +
+  labs(shape = "Group 2") +
+  scale_shape_manual(values = 1:12) +
+  geom_line(aes(colour = factor((grp1size)))) +
+  labs(colour = "Group 1") +
+  # coord_cartesian(xlim = c(30, 60), ylim = c(0,6)) +
+  labs (#title = "% deprived cases missed vs time saved using two-stage adaptive approach",
+        #subtitle = "Using single LTM for EU",
+        #caption = "EU-SILC 2014",
+        x = "\nTime saving (%)",
+        y = "Percent of deprived cases 'missed'\n") +
+  theme(axis.text = element_text(size = axis.text.size)) +
+  theme(axis.title = element_text(size = title.text.size, face = "bold")) +
+  theme(legend.text = element_text(size = axis.text.size)) +
+  theme(legend.title = element_text(size = axis.text.size))  
+
+# PAPERFIG 3
+ggsave(here(dir_figs, paste0("fig 3 - trade-off EU.png")),
+       height = 6, width = 6)
+ggsave(here(dir_figs, paste0("fig 3 - trade-off EU.tiff")),
+       device = "tiff",
+       height = 6, width = 6)
+```
+
+Stats for text related to Fig 3.
+
+```{r 2stage all, fig.height=6, fig.width=8}
+
+silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0),
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(option, grp1size, grp2size) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(option, grp1size, grp2size) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) 
+
+
+```
+
+
+Previous figure but with convex hull as potential means to identify most relevant points. Clear that very small margins between point being an apex on hull and inside it - within limits of noise, almost certainly. So this is not a great way to identify options for selection. 
+
+
+```{r 2stage all hull, fig.height=6, fig.width=8}
+
+# make df for convex hull 
+hull <- silc_all2 %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0),
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(grp1size, grp2size) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(grp1size, grp2size) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  ungroup() %>%
+  slice(chull(saving, md_miss_pct))
+
+silc_all2 %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0),
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(grp1size, grp2size) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(grp1size, grp2size) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  ggplot(aes(x = saving, y = md_miss_pct)) +
+  geom_point(aes(shape = factor(grp2size - grp1size))) +
+  labs(shape = "Group 2") +
+  scale_shape_manual(values = 1:12) +
+  geom_line(aes(colour = factor((grp1size)))) +
+  geom_polygon(data = hull, alpha = 0.5) +
+  labs(colour = "Group 1") +
+  # coord_cartesian(xlim = c(30, 60), ylim = c(0,6)) +
+  labs (title = "% deprived cases missed vs time saved using two-stage adaptive approach",
+        subtitle = "Using single LTM for EU",
+        caption = "EU-SILC 2014",
+        x = "Saving",
+        y = "Percent of deprived cases 'missed'")
+
+```
+
+
+To look at the trade-offs at country level, we focus on four of the most promising options where missed cases are below 0.5% on average in all cases. The number of questions in the first and second groups respectively are: 
+
+* 4 + 10
+* 5 + 9
+* 6 + 8
+* 7 + 7
+
+As before, we stop questioning: where someone lacks none of the first group of items or just one of the second group. 
+
+The results show the challenges of constructing an adaptive measure for such a wide range of circumstances. Not only are levels of missingness and savings different but the relationship between the two changes across the options so it is not a consistent trade-off. 
+
+* In most countries and esp. higher income ones (ex. Finland), losses are minimal and don't change between options but earlier options (i.e. smaller initial group) have higher time saving - by up to 15%.
+* In a small number of poorer countries (SK, RS, RO, BG), losses improve as we have a larger initial group and with limited impact on time saving (around 5%). 
+
+```{r 2stage save miss, fig.height=16, fig.width=10}
+
+temp <- silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(option) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(option) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  mutate(country = "ALL")
+
+silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(country, option) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(country, option) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  rbind(temp) %>%
+  ggplot(aes(x = saving, y = md_miss_pct)) +
+  geom_point(aes(shape = option)) + 
+  labs(shape = "Algorithm") +
+  scale_shape_manual(values = 1:4) +
+  geom_line(colour = "darkblue") + 
+  facet_wrap(~ factor(country, levels = cntry_order2), ncol=4) +
+  coord_cartesian(xlim = c(10, 70), ylim = c(0,2.5)) +
+  labs (#title = "% deprived cases missed vs time saved using two-stage adaptive approach", 
+        #subtitle = "Countries ordered by deprivation; Using single LTM for EU",
+        #caption = "EU-SILC 2014",
+        x = "\nTime saving (%)", 
+        y = "Percent of deprived cases 'missed'\n") +
+  theme(axis.text = element_text(size = axis.text.size)) +
+  theme(axis.title = element_text(size = title.text.size, face = "bold")) +
+  theme(legend.title = element_text(size = axis.text.size)) + 
+  theme(legend.text = element_text(size = axis.text.size)) + 
+  theme(strip.text = element_text(size = axis.text.size)) 
+
+# PAPERFIG 4
+ggsave(here(dir_figs, paste0("fig 4 - trade-off - cntry ltm.png")),
+       height = 10, width = 7)
+ggsave(here(dir_figs, paste0("fig 4 - trade-off - cntry ltm.tiff")),
+       device = "tiff",
+       height = 10, width = 7)
+```
+
+Figs for paper, cited in section 4.2. 
+
+```{r 2stage all stat, fig.height=6, fig.width=8}
+
+option_levels <- c("4+10", "5+9", "6+8", "7+7")
+
+silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(option) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(option) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  mutate(country = "ALL")
+
+ 
+```
+
+More figs for "5+9" - for section 6 of paper. 
+
+```{r 2stage save miss, fig.height=16, fig.width=10}
+
+temp <- silc_all2 %>%
+  filter(option == "5+9") %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(option) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(option) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  mutate(country = "ALL")
+
+silc_all2 %>%
+  filter(option == "5+9") %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(country, option) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(country, option) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  rbind(temp) %>% 
+  arrange(saving)
+
+```
+
+We can look at the same data grouping, countries within option. 
+
+* With the first and second options, only Slovakia sees losses in deprived cases much above 1%; BG also just above 1%. Average missed cases are around 0.4% with time savings at or just above 40%. 
+* By the third option, all countries bar Slovakia have losses below 1% and by fourth all countries are below 1%. Average missed cases are around 0.25% with time savings 37% and 33% respectively.
+
+```{r 2stage save miss options, fig.height=8, fig.width=10}
+
+option_levels <- c("4+10", "5+9", "6+8", "7+7")
+
+# make EU-wide scores
+temp <- silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(option) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(option) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  mutate(country = "ALL")
+
+silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(country, option) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(country, option) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  rbind(temp) %>%
+  mutate(text_size = case_when(country == "ALL" ~ 2, 
+                               TRUE ~ 1)) %>%
+  ggplot(aes(x = saving, y = md_miss_pct)) +
+  geom_point(size = 0, colour = "lightgrey") + 
+  geom_text(aes(label=country, size = text_size)) + 
+  scale_size(range = c(3.5,5)) +
+  facet_wrap(~ option) +
+  coord_cartesian(xlim = c(10, 70), ylim = c(0,2.5)) +
+  labs (title = "% deprived cases missed vs time saved - four options", 
+        subtitle = "Using single LTM for EU; facets are: [N in Group 1] + [N in Group 2]",
+        caption = "EU-SILC 2014",
+        x = "Saving", 
+        y = "Percent of deprived cases 'missed'") +
+  theme(legend.position = "none")
+
+
+# ggsave(here(dir_figs, paste0("miss v save - cntry ltm.png")),
+#        height = 16, width = 10)
+```
+
+## Further evaluation of two-stage adaptive approach
+
+To complete this stage, we present a wider range of metrics for assessing the quality of any adaptive approach. These are: 
+
+* the impact on our estimate of deprivation rates in each country; 
+* the correlation between the full and adaptive scales; and 
+* missingness by item rather than overall deprivation. 
+
+
+### Overall deprivation rates - full vs adaptive scales
+
+One way to evaluate the adaptive measure is to compare the deprivation rate on the basis of this scale with the deprivation rate estimated by the full scale. This is perhaps the most widely quoted statistic from this measure. 
+
+* Using a deprivation threshold of lacking 3+ items, we see that the differences are minimal even in the poorest countries for all four options. 
+* Most countries have 1000-3000 households in their EU-SILC surveys and deprivation rates of 5-50%. Hence confidence intervals for their estimates of the deprivation rate are in the range 1-3%. Differences from the use of the adaptive approach are therefore minimal by comparison with the general uncertainty for these estimates. 
+
+
+```{r depvn rates, fig.height=14, fig.width=10}
+
+# all - adaptive
+temp <- silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  mutate(md = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(option) %>%
+  summarise(dep_rate = 100 * mean(md)) %>%
+  mutate(country = "ALL", 
+         type = 0)
+
+# all - full scale
+temp1 <- silc_all2 %>%
+  filter(option == "3+3") %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         option = "full_scale") %>%
+  group_by(option) %>%
+  summarise(dep_rate = 100 * mean(md)) %>%
+  mutate(country = "ALL", 
+         type = 1) %>%
+  rbind(temp)
+
+#country - full scale
+temp <- silc_all2 %>%
+  filter(option == "3+3") %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         option = "full_scale") %>%
+  group_by(country, option) %>%
+  summarise(dep_rate = 100 * mean(md)) %>%
+  mutate(type = 1)
+
+# country - adaptive + bind others + fig
+silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  mutate(md = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                        mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(country, option) %>%
+  summarise(dep_rate = 100 * mean(md)) %>%
+  mutate(type = 0) %>%
+  rbind(temp) %>%
+  rbind(temp1) %>%
+  ggplot(aes(x = option, y = dep_rate)) +
+  geom_bar(aes(fill = type), stat = "identity") + 
+  facet_wrap(~ factor(country, levels = cntry_order2),
+             ncol=7) +
+  labs (# title = "Deprivation rates (lack 3+ items) on adaptive scales and full scales", 
+        # subtitle = "Countries ordered by deprivation; using single LTM for EU",
+        # caption = "EU-SILC 2014",
+        x = "Algorithm", 
+        y = "Deprivation rate (%)\n") +
+  theme(axis.text = element_text(size = axis.text.size)) +
+  theme(axis.title = element_text(size = title.text.size, face = "bold")) +
+  theme(strip.text = element_text(size = title.text.size)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.25)) +
+  theme(legend.position="none")   
+
+# PAPERFIG 5
+ggsave(here(dir_figs, paste0("fig 5 - dep rates adapt and full.png")),
+       height = 8, width = 6)
+ggsave(here(dir_figs, paste0("fig 5 - dep rates adapt and full.tiff")),
+       device = "tiff",
+       height = 8, width = 6)
+```
+
+Stats for paper
+
+```{r depvn rates stat1, fig.height=18, fig.width=10}
+
+# all - adaptive
+temp <- silc_all2 %>%
+  filter(option == "5+9") %>%
+  mutate(md = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(option) %>%
+  summarise(dep_rate = 100 * mean(md)) %>%
+  mutate(country = "ALL", 
+         type = 0)
+
+# all - full scale - pick any one option
+silc_all2 %>%
+  filter(option == "3+3") %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         option = "full_scale") %>%
+  group_by(option) %>%
+  summarise(dep_rate = 100 * mean(md)) %>%
+  mutate(country = "ALL", 
+         type = 1) %>%
+  rbind(temp)
+
+```
+
+Stats for paper
+
+```{r depvn rates stat2, fig.height=18, fig.width=10}
+
+#PAPERSTATS
+
+#country - full scale - pick any one option
+temp <- silc_all2 %>%
+  filter(option == "3+3") %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         option = "full_scale") %>%
+  group_by(country, option) %>%
+  summarise(dep_rate_full = 100 * mean(md)) 
+
+# country - adaptive + bind others
+silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  mutate(md = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                        mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(country, option) %>%
+  summarise(dep_rate = 100 * mean(md)) %>%
+  left_join(temp, by = "country") %>%
+  mutate(diff = dep_rate_full - dep_rate) %>%
+  arrange(desc(diff))
+```
+
+Depvn rates by country - one option
+
+```{r depvn rates 5+9, fig.height=6, fig.width=9}
+
+# screening depvn rate
+temp <- silc_all2 %>%
+  filter(option == "5+9") %>%
+  mutate(md = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                        mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(country) %>%
+  summarise(dep_rate = 100 * mean(md)) %>%
+  mutate(type = "adaptive")
+
+# all - full scale
+silc_all2 %>%
+  filter(option == "5+9") %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1, 
+                        mdch < depvn_threshold ~ 0)) %>%  
+  group_by(country) %>%
+  summarise(dep_rate = 100 * mean(md)) %>%
+  mutate(type = "full") %>%
+  rbind(temp) %>%
+  pivot_wider(names_from = type, values_from = dep_rate) %>% 
+  mutate(diff = full - adaptive) %>% 
+  pivot_longer(c(adaptive, diff), names_to = "type", values_to = "dep_rate") %>% 
+  select(-full) %>% 
+  mutate(type = factor(case_when(type == "diff" ~ "full", TRUE ~ type),
+                       levels = c("full", "adaptive"))) %>% 
+  ggplot(aes(x = factor(country, levels = cntry_order), 
+             y = dep_rate, 
+             group = type)) +
+  geom_bar(aes(fill = type), stat = "identity") + 
+  labs (title = "Child deprivation rates on adaptive and full scales ('5+9' option)", 
+        subtitle = "",
+        caption = "EU-SILC 2014",
+        x = "\nCountry", 
+        y = "Deprivation rate\n") +
+  theme(axis.text = element_text(size = axis.text.size)) +
+  theme(axis.title = element_text(size = title.text.size, face = "bold")) +
+  theme(strip.text = element_text(size = title.text.size))
+
+
+```
+
+### Correlations in deprivation scores - full vs adaptive scales
+
+The previous figure looks only at differences using a single threshold. Here we can look at the measure as a whole, using correlations between the full-scale and the adaptive scale across the range of scores. We might use the full scale in regression models to examine how rising levels of deprivation are related to other phenomena. In these cases, the actual level or count matters less than the relationship between cases (hence the focus on correlations). 
+
+We look at all cases but also at the non-zero cases only (i.e. those with at least one deprivation on the full scale). The latter is a tougher test but perhaps appropriate given the predominance of zero deprivation cases in the dataset. 
+
+* Correlations are extremely high for all four options, but particularly the last two. The adaptive measure would be just as good for these applications as the full scale. 
+* Iceland is the weakest case by some way but even here, the worst option gives a correlation of 0.96 when looking at non-zero cases and 0.98 for all cases - still extremely high. 
+
+```{r correls, fig.height=18, fig.width=10}
+
+# plot depvn rates for full and adaptive scales
+temp <- silc_all2 %>%
+  # filter(option %in% option_levels) %>%
+  filter(option == "5+9") %>%
+  select(option, mdch, mdch_2, mdch_adapt2) %>%
+  mutate(mdch_nozero = case_when(mdch > 0 ~ mdch),
+         mdch_adapt2_nozero = case_when(mdch > 0 ~ mdch_adapt2)) %>%
+  group_by(option) %>%
+  summarise(all_cases = cor(mdch, mdch_adapt2),
+            nonzero_cases = cor(mdch_nozero, mdch_adapt2_nozero, use = "complete.obs")) %>%
+  pivot_longer(c(all_cases, nonzero_cases), names_to = "version", values_to = "correlation") %>%
+  mutate(country = "ALL")
+
+silc_all2 %>%
+  # filter(option %in% option_levels) %>%
+  filter(option == "5+9") %>%
+  select(country, option, mdch, mdch_2, mdch_adapt2) %>%
+  mutate(mdch_nozero = case_when(mdch > 0 ~ mdch),
+         mdch_adapt2_nozero = case_when(mdch > 0 ~ mdch_adapt2)) %>%
+  group_by(country, option) %>%
+  summarise(all_cases = cor(mdch, mdch_adapt2),
+            nonzero_cases = cor(mdch_nozero, mdch_adapt2_nozero, use = "complete.obs")) %>%
+  pivot_longer(c(all_cases, nonzero_cases), names_to = "version", values_to = "correlation") %>%
+  rbind(temp) %>% 
+  arrange(correlation)
+
+
+# # dropped this fig from paper
+# silc_all2 %>%
+#   filter(option %in% option_levels) %>%
+#   select(country, option, mdch, mdch_2, mdch_adapt2) %>%
+#   mutate(mdch_nozero = case_when(mdch > 0 ~ mdch),
+#          mdch_adapt2_nozero = case_when(mdch > 0 ~ mdch_adapt2)) %>%
+#   group_by(country, option) %>%
+#   summarise(all_cases = cor(mdch, mdch_adapt2),
+#             nonzero_cases = cor(mdch_nozero, mdch_adapt2_nozero, use = "complete.obs")) %>%
+#   pivot_longer(c(all_cases, nonzero_cases), names_to = "version", values_to = "correlation") %>%
+#   rbind(temp) %>%
+#   ggplot(aes(x = option, y = correlation)) +
+#   geom_bar(aes(fill = version), stat = "identity", position = "dodge") +
+#   facet_wrap(~ factor(country, levels = cntry_order2), ncol=4) +
+#   coord_cartesian(ylim = c(.95,1)) +
+#   labs(#title = "Correlation between full and adaptive scales", 
+#         #subtitle = paste0("Countries ordered by deprvn; four options; y axis truncated"),
+#         #caption = "EU-SILC 2014",
+#         x = "\nAlgorithm", 
+#         y = "Correlation\n") +
+#   guides(fill=guide_legend(title="Cases included")) +
+#   theme(axis.text = element_text(size = axis.text.size)) +
+#   theme(axis.title = element_text(size = title.text.size, face = "bold")) +
+#   theme(legend.text = element_text(size = axis.text.size)) +
+#   theme(legend.title = element_text(size = title.text.size)) +
+#   theme(strip.text = element_text(size = title.text.size)) +
+#   theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.25))  
+
+
+```
+
+Stats for paper - .
+
+```{r correls stat1, fig.height=18, fig.width=10}
+
+# correlation - all
+silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  select(option, mdch, mdch_2, mdch_adapt2) %>%
+  mutate(mdch_nozero = case_when(mdch > 0 ~ mdch),
+         mdch_adapt2_nozero = case_when(mdch > 0 ~ mdch_adapt2)) %>%
+  group_by(option) %>%
+  summarise(all_cases = cor(mdch, mdch_adapt2),
+            nonzero_cases = cor(mdch_nozero, mdch_adapt2_nozero, use = "complete.obs")) %>%
+  pivot_longer(c(all_cases, nonzero_cases), names_to = "version", values_to = "correlation") %>%
+  mutate(country = "ALL")
+```
+
+Stats for paper - "5+9" option details (conclusion).
+
+```{r correls stat2, fig.height=18, fig.width=10}
+
+# correlation - countries - option 5+9
+silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  select(country, option, mdch, mdch_2, mdch_adapt2) %>%
+  mutate(mdch_nozero = case_when(mdch > 0 ~ mdch),
+         mdch_adapt2_nozero = case_when(mdch > 0 ~ mdch_adapt2)) %>%
+  group_by(country, option) %>%
+  summarise(all_cases = cor(mdch, mdch_adapt2),
+            nonzero_cases = cor(mdch_nozero, mdch_adapt2_nozero, use = "complete.obs")) %>%
+  pivot_longer(c(all_cases, nonzero_cases), names_to = "version", values_to = "correlation")  %>%
+  # filter(version == "all_cases") %>%
+  arrange(country)
+
+```
+
+### Deprivation intensity
+
+A further test looks at deprivation intensity - for those who are deprived, the average number of items lacked. 
+
+* Intensity is the same in 13 countries for at least three of the options.
+* Otherwise, intensity is slightly higher on the adaptive measure - presumably on the basis that the least deprived households are the ones most likely missed. 
+* Differences are always less than 0.025 except in four countries (BE, SK, RO, BG). 
+* Max difference is 0.09 (BG, option "4+10"). 
+
+
+```{r intensity, fig.height=18, fig.width=10}
+
+# intensity for children depvd on full measure - All countries
+temp <- silc_all2 %>%
+  filter(option %in% option_levels & 
+           mdch >= depvn_threshold) %>% 
+  select(option, mdch) %>%
+  mutate(mdch_intens = mdch) %>%        # earlier used mdch - depvn_threshold
+  group_by(option) %>%
+  summarise(mdch_intens = mean(mdch_intens)) %>% 
+  mutate(country = "ALL", 
+         type = "full")
+
+# intensity for children depvd on adaptive measure - All countries
+# and join intensity on full
+temp1 <- silc_all2 %>%
+  filter(option %in% option_levels & 
+           mdch_adapt2 >= depvn_threshold) %>% 
+  select(option, mdch_adapt2) %>%
+  mutate(mdch_adapt2_intens = mdch_adapt2) %>%        # earlier used mdch - depvn_threshold
+  group_by(option) %>%
+  summarise(mdch_intens = mean(mdch_adapt2_intens)) %>% 
+  mutate(country = "ALL", 
+         type = "adaptive") %>% 
+  rbind(temp)
+
+
+# intensity for children depvd on full measure - country level
+temp <- silc_all2 %>%
+  filter(option %in% option_levels & 
+           mdch >= depvn_threshold) %>% 
+  select(country, option, mdch) %>%
+  mutate(mdch_intens = mdch) %>%        # earlier used mdch - depvn_threshold
+  group_by(country, option) %>%
+  summarise(mdch_intens = mean(mdch_intens)) %>% 
+  mutate(type = "full")
+
+# intensity for children depvn on adaptive measure - country level
+# then join intensity on full scale for countries
+# then join both of those for all countries
+silc_all2 %>%
+  filter(option %in% option_levels & 
+           mdch_adapt2 >= depvn_threshold) %>% 
+  select(country, option, mdch_adapt2) %>%
+  mutate(mdch_adapt2_intens = mdch_adapt2) %>%        # earlier used mdch - depvn_threshold
+  group_by(country, option) %>%
+  summarise(mdch_intens = mean(mdch_adapt2_intens)) %>% 
+  mutate(type = "adaptive") %>% 
+  rbind(temp) %>%
+  rbind(temp1) %>%
+  mutate(type = factor(type, levels = c("full", "adaptive"))) %>% 
+  ggplot(aes(x = option, y = mdch_intens, group = type)) +
+  geom_bar(aes(fill = type), stat = "identity", position = "dodge") +
+  facet_wrap(~ factor(country, levels = cntry_order2), ncol=4) +
+  # coord_cartesian(ylim = c(.95,1)) +
+  labs(title = "Deprivation intensity on full and adaptive scales", 
+        subtitle = paste0("No. items lacked for hhlds above the deprivation threshold"),
+        caption = "EU-SILC 2014",
+        x = "\nAlgorithm", 
+        y = "Deprivation intensity\n") +
+  guides(fill=guide_legend(title="Scale")) +
+  theme(axis.text = element_text(size = axis.text.size)) +
+  theme(axis.title = element_text(size = title.text.size, face = "bold")) +
+  theme(legend.text = element_text(size = axis.text.size)) +
+  theme(legend.title = element_text(size = title.text.size)) +
+  theme(strip.text = element_text(size = title.text.size)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.25))  
+
+
+```
+
+Plotting differences
+
+```{r intensity diff, fig.height=10, fig.width=10}
+
+# intensity for children depvn on full measure - All
+temp <- silc_all2 %>%
+  filter(option %in% option_levels &
+           mdch >= depvn_threshold) %>%
+  select(option, mdch) %>%
+  mutate(mdch_intens = mdch) %>%        # earlier used mdch - depvn_threshold
+  group_by(option) %>%
+  summarise(mdch_intens = mean(mdch_intens)) %>%
+  mutate(country = "ALL",
+         type = "full")
+
+# intensity for children depvn on adaptive measure - All
+temp1 <- silc_all2 %>%
+  filter(option %in% option_levels &
+           mdch_adapt2 >= depvn_threshold) %>%
+  select(option, mdch_adapt2) %>%
+  mutate(mdch_adapt2_intens = mdch_adapt2) %>%        # earlier used mdch - depvn_threshold
+  group_by(option) %>%
+  summarise(mdch_intens = mean(mdch_adapt2_intens)) %>%
+  mutate(country = "ALL",
+         type = "adaptive") %>%
+  rbind(temp)
+
+
+# intensity for children depvn on full measure - country level
+temp <- silc_all2 %>%
+  filter(option %in% option_levels &
+           mdch >= depvn_threshold) %>%
+  select(country, option, mdch) %>%
+  mutate(mdch_intens = mdch) %>%        # earlier used mdch - depvn_threshold
+  group_by(country, option) %>%
+  summarise(mdch_intens = mean(mdch_intens)) %>%
+  mutate(type = "full")
+
+# intensity for children depvn on adaptive measure - country level
+# then add 'ALL'
+silc_all2 %>%
+  filter(option %in% option_levels & 
+           mdch_adapt2 >= depvn_threshold) %>% 
+  select(country, option, mdch_adapt2) %>%
+  mutate(mdch_adapt2_intens = mdch_adapt2) %>%        # earlier used mdch - depvn_threshold
+  group_by(country, option) %>%
+  summarise(mdch_intens = mean(mdch_adapt2_intens)) %>% 
+  mutate(type = "adaptive") %>% 
+  rbind(temp) %>%
+  rbind(temp1) %>%
+  pivot_wider(names_from = "type", values_from = "mdch_intens") %>% 
+  mutate(mdch_intens_diff = adaptive - full) %>% 
+  ggplot(aes(x = option, y = mdch_intens_diff)) +
+  geom_bar(stat = "identity") +
+  facet_wrap(~ factor(country, levels = cntry_order2), ncol=7) +
+  scale_y_continuous(breaks = seq(0, 0.1, 0.02)) +
+  # coord_cartesian(ylim = c(.95,1)) +
+  labs(title = "Difference in deprivation intensity between adaptive and full scales", 
+        subtitle = paste0("Mean diff in no. items lacked for hhlds above deprivation threshold"),
+        caption = "EU-SILC 2014",
+        x = "\nAlgorithm", 
+        y = "Deprivation intensity\n") +
+  guides(fill=guide_legend(title="Scale")) +
+  theme(axis.text = element_text(size = axis.text.size)) +
+  theme(axis.title = element_text(size = title.text.size, face = "bold")) +
+  theme(legend.text = element_text(size = axis.text.size)) +
+  theme(legend.title = element_text(size = title.text.size)) +
+  theme(strip.text = element_text(size = title.text.size)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.25))  
+
+
+```
+
+Stats
+
+```{r intensity stat, fig.height=18, fig.width=10}
+
+# PAPERSTATS
+
+# intensity for children depvn on full measure - All
+temp <- silc_all2 %>%
+  filter(option %in% option_levels &
+           mdch >= depvn_threshold) %>%
+  select(option, mdch) %>%
+  mutate(mdch_intens = mdch) %>%        # earlier used mdch - depvn_threshold
+  group_by(option) %>%
+  summarise(mdch_intens = mean(mdch_intens)) %>%
+  mutate(country = "ALL",
+         type = "full")
+
+# intensity for children depvn on adaptive measure - All
+temp1 <- silc_all2 %>%
+  filter(option %in% option_levels &
+           mdch_adapt2 >= depvn_threshold) %>%
+  select(option, mdch_adapt2) %>%
+  mutate(mdch_adapt2_intens = mdch_adapt2) %>%        # earlier used mdch - depvn_threshold
+  group_by(option) %>%
+  summarise(mdch_intens = mean(mdch_adapt2_intens)) %>%
+  mutate(country = "ALL",
+         type = "adaptive") %>%
+  rbind(temp)
+
+# intensity for children depvn on full measure - country level
+temp <- silc_all2 %>%
+  filter(option %in% option_levels &
+           mdch >= depvn_threshold) %>%
+  select(country, option, mdch) %>%
+  mutate(mdch_intens = mdch) %>%        # earlier used mdch - depvn_threshold
+  group_by(country, option) %>%
+  summarise(mdch_intens = mean(mdch_intens)) %>%
+  mutate(type = "full")
+
+# intensity for children depvn on adaptive measure - country level
+# then add 'ALL'
+silc_all2 %>%
+  filter(option %in% option_levels & 
+           mdch_adapt2 >= depvn_threshold) %>% 
+  select(country, option, mdch_adapt2) %>%
+  mutate(mdch_adapt2_intens = mdch_adapt2) %>%        # earlier used mdch - depvn_threshold
+  group_by(country, option) %>%
+  summarise(mdch_intens = mean(mdch_adapt2_intens)) %>% 
+  mutate(type = "adaptive") %>% 
+  rbind(temp) %>%
+  rbind(temp1) %>%
+  pivot_wider(names_from = "type", values_from = "mdch_intens") %>% 
+  mutate(mdch_intens_diff = adaptive - full)  %>% 
+  arrange(option, mdch_intens_diff)
+
+```
+
+### Item missingness
+
+The toughest test for the adaptive approach is to look at missingness in each country, item by item. 
+
+One approach is to look at the proportion of those lacking each item on full scale who are missed by the adaptive scale. 
+
+* In general, the proportions are higher in the least deprived countries where questioning is much more likely to stop and where the share of the population lacking each item are small. As these are proportions of people lacking each item, the small numbers lacking some items 'magnifies' the problem. As the next figure shows, the number affected (as a proportion of the population) are very small. * The proportions are higher with the items which fewer people lack (small numbers). 
+
+
+
+```{r miss item pct, fig.height=18, fig.width=10}
+
+# % miss each item on adaptive scale - whole EU
+temp <- silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  select(option, all_of(lack_adapt2)) %>%
+  pivot_longer(all_of(lack_adapt2), names_to = "item", values_to = "lack_adapt2") %>%
+  group_by(option, item) %>%
+  summarise(lack_adapt2_pct = 100 * mean(lack_adapt2)) %>%
+  mutate(item = str_remove(item, "lack_adapt2_"))
+  
+temp2 <- silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  select(option, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(option, item) %>%
+  summarise(lack_pct = 100 * mean(lack))  %>%
+  left_join(temp, by = c("option", "item")) %>%
+  mutate(miss = lack_pct - lack_adapt2_pct, 
+         miss_pct = 100 * miss/lack_pct)  %>%
+  mutate(country = "ALL") 
+
+# % miss each item on adaptive scale - countries
+temp <- silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  select(country, option, all_of(lack_adapt2)) %>%
+  pivot_longer(all_of(lack_adapt2), names_to = "item", values_to = "lack_adapt2") %>%
+  group_by(country, option, item) %>%
+  summarise(lack_adapt2_pct = 100 * mean(lack_adapt2)) %>%
+  mutate(item = str_remove(item, "lack_adapt2_"))
+  
+silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  select(country, option, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(country, option, item) %>%
+  summarise(lack_pct = 100 * mean(lack))  %>%
+  left_join(temp, by = c("country", "option", "item")) %>%
+  mutate(miss = lack_pct - lack_adapt2_pct, 
+         miss_pct = 100 * miss/lack_pct) %>%
+  rbind(temp2) %>%
+  ggplot(aes(x = factor(item, levels = item_order_diff2), 
+             y = miss_pct)) +
+  geom_bar(aes(fill = option), stat = "identity", position = "dodge") + 
+  facet_wrap(~ factor(country, levels = cntry_order2), ncol=3) +
+  labs(title = "Proportion of lacked items missed by adaptive scales (four options)", 
+        subtitle = paste0("Countries ordered by deprvn, items ordered by difficulty"),
+        caption = "EU-SILC 2014",
+        x = "Country", 
+        y = "Proportion of those lacking item 'missed'") +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  guides(fill=guide_legend(title="Measure"))
+
+```
+
+An alterantive is to look at percentage of all cases where an item lacked on full scale is not captured by the adaptive scale. This therefore reflects the proportion of people lacking an item in any given country. There are relatively minor differences between the options here. 
+
+* There are thirteen countries where the differences are never more than 1% [SE, FI, NL, LU, DE, IS, SI, FR, CZ, HR, PL, IE, ES].
+* There are ten countries where there is one item with a difference of 1-2% [CH, DK, AT, EE, BE, CY, PT, EL, RS, HU].
+* There are three countries where there are two items with a difference of 1-2% [UK, IT, SK].
+* There are two countries where there are three items with a difference of 1-2% [LV, BG].
+* One country has differences on two items of 2-3% and a further two of 1-2% [RO].
+* There are two countries with one item with a difference on 5% [MT] or 8% [LT].
+
+```{r miss item, fig.height=18, fig.width=10}
+
+# % miss each item on adaptive scale - whole EU
+temp <- silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  select(option, all_of(lack_adapt2)) %>%
+  pivot_longer(all_of(lack_adapt2), names_to = "item", values_to = "lack_adapt2") %>%
+  group_by(option, item) %>%
+  summarise(lack_adapt2_pct = 100 * mean(lack_adapt2)) %>%
+  mutate(item = str_remove(item, "lack_adapt2_"))
+  
+temp2 <- silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  select(option, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(option, item) %>%
+  summarise(lack_pct = 100 * mean(lack))  %>%
+  left_join(temp, by = c("option", "item")) %>%
+  mutate(miss = lack_pct - lack_adapt2_pct, 
+         miss_pct = 100 * miss/lack_pct)  %>%
+  mutate(country = "ALL") 
+
+# % miss each item on adaptive scale - countries
+temp <- silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  select(country, option, all_of(lack_adapt2)) %>%
+  pivot_longer(all_of(lack_adapt2), names_to = "item", values_to = "lack_adapt2") %>%
+  group_by(country, option, item) %>%
+  summarise(lack_adapt2_pct = 100 * mean(lack_adapt2)) %>%
+  mutate(item = str_remove(item, "lack_adapt2_"))
+
+silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  select(country, option, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(country, option, item) %>%
+  summarise(lack_pct = 100 * mean(lack))  %>%
+  left_join(temp, by = c("country", "option", "item")) %>%
+  mutate(miss = lack_pct - lack_adapt2_pct, 
+         miss_pct = 100 * miss/lack_pct) %>%
+  rbind(temp2) %>%
+  ggplot(aes(x = factor(item, levels = item_order_diff2), 
+             y = miss)) +
+  geom_bar(aes(fill = option), stat = "identity", position = "dodge") + 
+  facet_wrap(~ factor(country, levels = cntry_order2), ncol=3) +
+  coord_cartesian(ylim = c(0,8)) +
+  labs(title = "% of cases where lacked item missed by simple adaptive scales (N=4:7)", 
+        subtitle = paste0("Countries ordered by deprvn, items ordered by difficulty; y axis truncated"),
+        caption = "EU-SILC 2014",
+        x = "Country", 
+        y = "% cases where lack missed") +
+  theme(axis.text.x = element_text(angle = 90)) + 
+  guides(fill=guide_legend(title="Measure"))
+
+```
+
+As previous but just 5+9
+
+```{r miss item2, fig.height=14, fig.width=10}
+
+# % miss each item on adaptive scale - whole EU
+temp <- silc_all2 %>%
+  filter(option == "5+9") %>%
+  select(option, all_of(lack_adapt2)) %>%
+  pivot_longer(all_of(lack_adapt2), names_to = "item", values_to = "lack_adapt2") %>%
+  group_by(option, item) %>%
+  summarise(lack_adapt2_pct = 100 * mean(lack_adapt2)) %>%
+  mutate(item = str_remove(item, "lack_adapt2_"))
+  
+temp2 <- silc_all2 %>%
+  filter(option == "5+9") %>%
+  select(option, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(option, item) %>%
+  summarise(lack_pct = 100 * mean(lack))  %>%
+  left_join(temp, by = c("option", "item")) %>%
+  mutate(miss = lack_pct - lack_adapt2_pct, 
+         miss_pct = 100 * miss/lack_pct)  %>%
+  mutate(country = "ALL") 
+
+# % miss each item on adaptive scale - countries
+temp <- silc_all2 %>%
+  filter(option == "5+9") %>%
+  select(country, option, all_of(lack_adapt2)) %>%
+  pivot_longer(all_of(lack_adapt2), names_to = "item", values_to = "lack_adapt2") %>%
+  group_by(country, option, item) %>%
+  summarise(lack_adapt2_pct = 100 * mean(lack_adapt2)) %>%
+  mutate(item = str_remove(item, "lack_adapt2_"))
+  
+silc_all2 %>%
+  filter(option == "5+9") %>%
+  select(country, option, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(country, option, item) %>%
+  summarise(lack_pct = 100 * mean(lack))  %>%
+  left_join(temp, by = c("country", "option", "item")) %>%
+  mutate(miss = lack_pct - lack_adapt2_pct, 
+         miss_pct = 100 * miss/lack_pct) %>%
+  rbind(temp2) %>%
+  ggplot(aes(x = factor(item, levels = item_order_diff2), 
+             y = miss)) +
+  geom_bar(aes(fill = option), stat = "identity", position = "dodge") + 
+  geom_hline(yintercept = 2, linetype = "dashed") +
+  facet_wrap(~ factor(country, levels = cntry_order2), ncol=4) +
+  coord_cartesian(ylim = c(0,8)) +
+  labs( #title = "% of cases where lacked item missed by simple adaptive scales ('5+9' option)", 
+        #subtitle = paste0("Countries ordered by deprvn, items ordered by difficulty; y axis truncated"),
+        #caption = "EU-SILC 2014",
+        x = "\nItem", 
+        y = "% cases where item lack 'missed'\n") +
+  theme(axis.text.x = element_text(angle = 90, size = axis.text.size)) + 
+  theme(axis.text.y = element_text(size = axis.text.size)) +
+  theme(axis.title = element_text(size = title.text.size * 1.2, face = "bold")) +
+  theme(strip.text = element_text(size = title.text.size, face = "bold")) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.25)) +
+  theme(legend.position = "none")
+
+# PAPERFIG 6
+ggsave(here(dir_figs, paste0("fig 6 - item missing.png")),
+       height = 12, width = 10)
+ggsave(here(dir_figs, paste0("fig 6 - item missing.tiff")),
+       device = "tiff",
+       height = 12, width = 10)
+
+```
+
+Third approach - show % lack each item on each of the four adaptive approaches, and on the full scale.
+
+```{r miss item3, fig.height=18, fig.width=10}
+
+# % lack item on full scale - all countries together
+temp <- silc %>%
+  select(all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(item) %>%
+  summarise(lack_pct = 100*mean(lack)) %>%
+  mutate(option = "Full")
+
+# % lack item on adaptive scale + full scale - all countries together
+temp1 <- silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  select(option, all_of(lack_adapt2)) %>%
+  pivot_longer(all_of(lack_adapt2), names_to = "item", values_to = "lack_adapt2") %>%
+  group_by(option, item) %>%
+  summarise(lack_pct = 100 * mean(lack_adapt2)) %>%
+  mutate(item = str_remove(item, "lack_adapt2_")) %>%
+  rbind(temp) %>%
+  mutate(country = "ALL")
+
+# % lack item on full scale - countries
+temp <- silc %>%
+  select(country, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(country, item) %>%
+  summarise(lack_pct = 100*mean(lack)) %>%
+  mutate(option = "Full")
+
+# % lack item on adaptive scale + full scale - countries + all
+silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  select(country, option, all_of(lack_adapt2)) %>%
+  pivot_longer(all_of(lack_adapt2), names_to = "item", values_to = "lack_adapt2") %>%
+  group_by(country, option, item) %>%
+  summarise(lack_pct = 100 * mean(lack_adapt2)) %>%
+  mutate(item = str_remove(item, "lack_adapt2_")) %>%
+  rbind(temp) %>%
+  rbind(temp1) %>%
+  ggplot(aes(x = factor(item, levels = item_order_diff2),
+             y = lack_pct)) +
+  geom_bar(aes(fill = option), stat = "identity", position = "dodge") +
+  facet_wrap(~ factor(country, levels = cntry_order2), ncol=3) +
+  # coord_cartesian(ylim = c(0,60)) +
+  labs(#title = "% lacked each item on adaptive and full scales by country",
+       #subtitle = paste0("Countries ordered by deprvn, items ordered by difficulty"),
+       #caption = "EU-SILC 2014",
+       x = "\nItem",
+       y = "% lack item\n") +
+  theme(axis.text.x = element_text(size = axis.text.size * .8)) +
+  theme(axis.text.y = element_text(size = axis.text.size)) +
+  theme(axis.title = element_text(size = title.text.size, face = "bold")) +
+  theme(legend.text = element_text(size = axis.text.size)) +
+  theme(legend.title = element_text(size = title.text.size)) +
+  theme(strip.text = element_text(size = title.text.size)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.25)) +
+  guides(fill=guide_legend(title="Algorithm"))
+
+
+```
+
+Third approach but just 5+9 - show % lack each item on each of the four adaptive approaches, and on the full scale.
+
+```{r miss item4, fig.height=18, fig.width=10}
+
+# % lack item on full scale - all countries together
+temp <- silc %>%
+  select(all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(item) %>%
+  summarise(lack_pct = 100*mean(lack)) %>%
+  mutate(option = "Full")
+
+# % lack item on adaptive scale + full scale - all countries together
+temp1 <- silc_all2 %>%
+  filter(option == "5+9") %>%
+  select(option, all_of(lack_adapt2)) %>%
+  pivot_longer(all_of(lack_adapt2), names_to = "item", values_to = "lack_adapt2") %>%
+  group_by(option, item) %>%
+  summarise(lack_pct = 100 * mean(lack_adapt2)) %>%
+  mutate(item = str_remove(item, "lack_adapt2_")) %>%
+  rbind(temp) %>%
+  mutate(country = "ALL")
+
+# % lack item on full scale - countries
+temp <- silc %>%
+  select(country, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(country, item) %>%
+  summarise(lack_pct = 100*mean(lack)) %>%
+  mutate(option = "Full")
+
+# % lack item on adaptive scale + full scale - countries + all
+silc_all2 %>%
+  filter(option == "5+9") %>%
+  select(country, option, all_of(lack_adapt2)) %>%
+  pivot_longer(all_of(lack_adapt2), names_to = "item", values_to = "lack_adapt2") %>%
+  group_by(country, option, item) %>%
+  summarise(lack_pct = 100 * mean(lack_adapt2)) %>%
+  mutate(item = str_remove(item, "lack_adapt2_")) %>%
+  rbind(temp) %>%
+  rbind(temp1) %>%
+  ggplot(aes(x = factor(item, levels = item_order_diff2),
+             y = lack_pct)) +
+  geom_bar(aes(fill = option), stat = "identity", position = "dodge") +
+  facet_wrap(~ factor(country, levels = cntry_order2), ncol=3) +
+  # coord_cartesian(ylim = c(0,60)) +
+  labs(#title = "% lacked each item on adaptive and full scales by country",
+       #subtitle = paste0("Countries ordered by deprvn, items ordered by difficulty"),
+       #caption = "EU-SILC 2014",
+       x = "\nItem",
+       y = "% lack item\n") +
+  theme(axis.text.x = element_text(size = axis.text.size * .8)) +
+  theme(axis.text.y = element_text(size = axis.text.size)) +
+  theme(axis.title = element_text(size = title.text.size, face = "bold")) +
+  theme(legend.text = element_text(size = axis.text.size)) +
+  theme(legend.title = element_text(size = title.text.size)) +
+  theme(strip.text = element_text(size = title.text.size)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.25)) +
+  guides(fill=guide_legend(title="Algorithm"))
+
+
+```
+
+Stats for paper - Latvia and Malta - % lack items on full scale
+
+```{r miss item stat, fig.height=18, fig.width=10}
+
+# % lack item on full scale - countries
+temp <- silc %>%
+  select(country, all_of(lack)) %>%
+  pivot_longer(all_of(lack), names_to = "item", values_to = "lack") %>%
+  group_by(country, item) %>%
+  summarise(lack_pct_full = 100*mean(lack))
+
+# % lack item on adaptive scale + full scale - countries + all
+silc_all2 %>%
+  filter(option == "5+9") %>%
+  select(country, option, all_of(lack_adapt2)) %>%
+  pivot_longer(all_of(lack_adapt2), names_to = "item", values_to = "lack_adapt2") %>%
+  group_by(country, option, item) %>%
+  summarise(lack_pct = 100 * mean(lack_adapt2)) %>%
+  mutate(item = str_remove(item, "lack_adapt2_")) %>%
+  left_join(temp, by = c("country", "item")) %>%
+  mutate(diff = lack_pct_full - lack_pct) %>%
+  arrange(desc(diff))
+
+
+```
+
+
+# Two-stage adaptive measure with separate country LTMs
+
+In this last stage, we look at how the adaptive approach works in each country when using the country-specific LTM rather than a single EU-wide LTM. 
+
+
+```{r 2stage cntry, fig.height=16, fig.width=10}
+
+# re-make rank of items in each year, spread and 
+#    re-order to match hhld-level data in silc df
+df_rank_cntry <- df_dffclt_cntry[c("country", "item", "Dffclt_rank")] %>%
+  pivot_wider(names_from = item, values_from = Dffclt_rank)
+
+# change names in df_rank_cntry
+colnames(df_rank_cntry) <- c("country", rank)
+
+# merge in ranks by country to hhld level data
+silc_cntry <- silc %>%
+  left_join(df_rank_cntry, by = "country")
+
+
+## silc-cntry2 - version with depvn on first i + j items
+# i - no of items in first group
+# j - no of items in second group
+
+silc_cntry2 <- data.frame()
+for (j in 3:14) {
+  for (i in 3:9) {
+    
+    if(i+j > 17) next
+    
+    temp <- silc_cntry
+    
+    # rank1 - rank if rank <= i (grp1size), else 0 [0:1]
+    temp[rank1] <- temp[rank] * (temp[rank] <= i)
+    # lack1 - if lack item in first i, equal to rank, else 0 [0:i]
+    temp[lack1] <- temp[lack] * temp[rank1]
+    # count items lacking in first i [0:i]
+    temp$mdch_1 <- rowSums(temp[lack1] >= 1)
+    # lack_adapt1 - items lacking on 1-stage adaptive [0:1]
+    # - where lack 1+ in first i, same as original (no stopping)
+    # - otherwise 0 (none in first i, so stop so none in rest) 
+    # - this doesn't need separate line in calculation
+    temp[lack_adapt1] <- temp[lack] * (temp$mdch_1 >= 1)     
+    # mdch_adapt1 - no. items lacking on adaptive 1 [0:17]
+    # count of adaptive one-stage 
+    temp$mdch_adapt1 <- rowSums(temp[lack_adapt1])          
+    # grp1size
+    temp$grp1size <- i
+    # qns_adapt1 - no. qns asked on adaptive 1
+    # i if lack none in first i [stop], else 17 [no stop]
+    temp$qns_adapt1 <- temp$grp1size * (temp$mdch_1 == 0) + 
+                        17 * (temp$mdch_1 >= 1)        
+    
+    # rank2 - rank if rank <= i+j (grp2size), else 0 [0:i+j]
+    temp[rank2] <- temp[rank] * (temp[rank] <= i+j)
+    # lack2 - rank if lack item in first i+j, else 0  [0:i+j]
+    temp[lack2] <- temp[lack] * temp[rank2]
+    # count items lacking in first i+j [0:i+j]
+    temp$mdch_2 <- rowSums(temp[lack2] >= 1)
+    # lack_adapt2 - items lacking on 2-stage adaptive [0:1]
+    #  mdch_1 == 0 then stop at first stage - count lack1's
+    #  mdch_1 > 0 but mdch_2 <=1 - count lack2's
+    #  mdch_1 >0 and mdch_2 >1 - count all lacks
+    temp[lack_adapt2] <- (temp[lack1] > 0)  * (temp$mdch_1 == 0) +                   
+                          (temp[lack2] > 0) * (temp$mdch_1 > 0 & temp$mdch_2 <= 1) +  
+                          (temp[lack] > 0)  * (temp$mdch_1 > 0 & temp$mdch_2 > 1)     
+    # mdch_adapt2 - no. items lacking on adaptive 2
+    temp$mdch_adapt2 <- rowSums(temp[lack_adapt2])
+    # grp2size
+    temp$grp2size <- i+j
+    # qns_adapt2 - no. qns asked on adaptive 2
+    temp$qns_adapt2 <- temp$grp1size * (temp$mdch_1 == 0) + 
+                        temp$grp2size * (temp$mdch_1 > 0 & temp$mdch_2 <= 1) +
+                         17 * (temp$mdch_1 > 0 & temp$mdch_2 > 1)
+    
+    silc_cntry2 <- silc_cntry2 %>%
+      rbind(temp)
+    
+  }
+}
+
+# add option
+silc_cntry2 <- silc_cntry2 %>%
+  mutate(option = factor(paste0(grp1size, "+", (grp2size-grp1size)),
+                         levels = option_order))
+
+
+# plot cntry versions 
+silc_cntry2 %>%
+  filter(grp1size %in% 3:9 & (grp2size-grp1size) %in% 3:10) %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0),
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(country, grp1size, grp2size) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(country, grp1size, grp2size) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  ggplot(aes(x = saving, y = md_miss_pct)) +
+  geom_point(aes(shape = factor(grp2size - grp1size))) +
+  labs(shape = "Group 2") +
+  scale_shape_manual(values = 1:12) +
+  geom_line(aes(colour = factor((grp1size)))) +
+  labs(colour = "Group 1") +
+  # coord_cartesian(xlim = c(10, 70), ylim = c(0,2)) +
+  facet_wrap(~ factor(country, levels = cntry_order),
+             ncol=3) +
+  labs (title = "% deprived cases missed vs time saved using two-stage adaptive approach",
+        subtitle = "Using single LTM for EU",
+        caption = "EU-SILC 2014",
+        x = "Saving",
+        y = "Percent of deprived cases 'missed'")
+
+
+```
+
+Plot only solutions where loss < 0.5
+
+```{r 2stage cntry2, fig.height=16, fig.width=10}
+
+# plot cntry versions 
+silc_cntry2 %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0),
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(country, grp1size, grp2size) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(country, grp1size, grp2size) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  filter(md_miss_pct < .5) %>%
+  ggplot(aes(x = saving, y = md_miss_pct)) +
+  geom_point(aes(shape = factor(grp2size - grp1size))) +
+  labs(shape = "Group 2") +
+  scale_shape_manual(values = 1:12) +
+  geom_line(aes(colour = factor((grp1size)))) +
+  labs(colour = "Group 1") +
+  coord_cartesian(xlim = c(10, 70), ylim = c(0,.5)) +
+  facet_wrap(~ factor(country, levels = cntry_order),
+             ncol=3) +
+  labs (title = "% deprived cases missed vs time saved using two-stage adaptive approach",
+        subtitle = "Using single LTM for EU",
+        caption = "EU-SILC 2014",
+        x = "Saving",
+        y = "Percent of deprived cases 'missed'")
+
+
+```
+
+Select solution where loss < 0.5/0.25 and max time saving. Note that some countries do not have an algorithm which meets a given threshold. With the country-specific LTM, Iceland doesn't have any models which meet even the first threshold. 
+
+Overall, results are not hugely better using country-specific model and in half the cases, no different, mixed or worse.
+
+* 15 countries - country-level model does better in every or almost every case: time savings around 5-10% better
+* 3 countries with no differences (SE, DK, NL) - information losses extremely small always
+* 13 countries mixed (AT, FR, IT, EL, BG) or EU-level model does better in all or almost all cases (SI, HR, PL, IS, SK, LT, CH, LU)
+
+```{r 2stage cntry3, fig.height=14, fig.width=10}
+
+# threshold for info loss (in %)
+loss_threshold <- c(1, 0.5, 0.25, 0.1)
+
+temp_all <- silc_all2 %>%
+    mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                          mdch < depvn_threshold ~ 0),
+           md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                                 mdch_adapt2 < depvn_threshold ~ 0)) %>%
+    group_by(country, grp1size, grp2size) %>%
+    mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+    ungroup() %>%
+    filter(md == 1) %>%
+    group_by(country, grp1size, grp2size) %>%
+    summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+              saving = mean(saving))
+
+temp_cntry <- silc_cntry2 %>%
+    mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                          mdch < depvn_threshold ~ 0),
+           md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                                 mdch_adapt2 < depvn_threshold ~ 0)) %>%
+    group_by(country, grp1size, grp2size) %>%
+    mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+    ungroup() %>%
+    filter(md == 1) %>%
+    group_by(country, grp1size, grp2size) %>%
+    summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+              saving = mean(saving))
+
+temp2 <- data.frame()
+for (i in 1:length(loss_threshold)) {
+  temp <- temp_all %>%
+    filter(md_miss_pct < loss_threshold[i]) %>%
+    group_by(country) %>%
+    filter(saving == max(saving)) %>%
+    ungroup() %>%
+    mutate(label = paste0(grp1size,"+",(grp2size-grp1size)),
+           threshold = loss_threshold[i], 
+           type = "EU LTM") %>%
+    select(country, label, threshold, type, md_miss_pct, saving)
+
+  temp1 <- temp_cntry %>%
+    filter(md_miss_pct < loss_threshold[i]) %>%
+    group_by(country) %>%
+    filter(saving == max(saving)) %>%
+    ungroup() %>%
+    mutate(label = paste0(grp1size,"+",(grp2size-grp1size)),
+           threshold = loss_threshold[i], 
+           type = "Country LTM") %>%
+    select(country, label, threshold, type, md_miss_pct, saving)
+
+  temp2 <- temp2 %>%
+    rbind(temp) %>%
+    rbind(temp1) 
+}
+
+temp2 <- temp2 %>%
+    mutate(country = factor(country, levels = cntry_order)) %>%
+    arrange(country, threshold)
+
+temp2 %>%
+  ggplot(aes(x = saving, y = md_miss_pct)) +
+  geom_point(aes(shape = factor(threshold), colour = type)) +
+  labs(shape = "Threshold") +
+  # scale_shape_manual(values = 1:12) +
+  geom_line(aes(colour = type)) +
+  labs(colour = "Type") +
+  coord_cartesian(xlim = c(10, 80), ylim = c(0,1)) +
+  facet_wrap(~ factor(country, levels = cntry_order2),
+             ncol=4) +
+  labs (#title = "% deprived cases missed vs time saved - country-specific vs EU-wide LTM",
+        #subtitle = paste0("Selecting best model for each country where time saved below given threshold"),
+        #caption = "EU-SILC 2014",
+        x = "\nTime saving (%)",
+        y = "Percent of deprived cases 'missed'\n") +
+  theme(axis.text = element_text(size = axis.text.size)) +
+  theme(axis.title = element_text(size = title.text.size, face = "bold")) +
+  theme(legend.text = element_text(size = axis.text.size)) +
+  theme(legend.title = element_text(size = title.text.size)) +
+  theme(strip.text = element_text(size = title.text.size)) 
+
+
+
+```
+
+Plot country version next to version using EU LTM, using the same selected set of options. Note that these are not necessarily the 'best' solutions for each country when using the country-specific models. 
+
+* In some cases, the use of the country-specific LTM makes no difference or virtually no difference (e.g. SE, CH, DK, NL)
+* In one or two cases, the country-specific LTM performs worse, at least for the points selected (e.g. IS, LU, HR, PL). 
+* In some cases, the country-specific models perform better for at least some of the options tested (e.g. FI, DE, FR, EE, BE, UK). 
+
+```{r 2stage cntry all, fig.height=14, fig.width=10}
+
+# EU-wide data
+# - make 'ALL'
+temp <- silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(option) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(option) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  mutate(country = "ALL",
+         method = "EU LTM")
+
+# - make cntry file with 'ALL'
+temp2 <- silc_all2 %>%
+  filter(option %in% option_levels) %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0), 
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(country, option) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(country, option) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving)) %>%
+  mutate(method = "EU LTM") %>%
+  rbind(temp)
+
+# plot cntry and EU-wide versions together
+# - make 'ALL'
+temp <- silc_cntry2 %>%
+  filter(option %in% option_levels) %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0),
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(option) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(option) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving))  %>%
+  mutate(country = "ALL",
+         method = "Country LTM")
+
+# - cntry file with 'ALL'; cntry LTM and EU-wide LTM
+silc_cntry2 %>%
+  filter(option %in% option_levels) %>%
+  mutate(md = case_when(mdch >= depvn_threshold ~ 1,
+                        mdch < depvn_threshold ~ 0),
+         md_adapt2 = case_when(mdch_adapt2 >= depvn_threshold ~ 1,
+                               mdch_adapt2 < depvn_threshold ~ 0)) %>%
+  group_by(country, option) %>%
+  mutate(saving = 100 * (17 - mean(qns_adapt2))/17) %>%
+  ungroup() %>%
+  filter(md == 1) %>%
+  group_by(country, option) %>%
+  summarise(md_miss_pct = 100 * (1 - sum(md_adapt2)/n()),
+            saving = mean(saving))  %>%
+  mutate(method = "Country LTM") %>%
+  rbind(temp) %>%
+  rbind(temp2) %>%
+  ggplot(aes(x = saving, y = md_miss_pct)) +
+  geom_point(aes(shape = option)) +
+  labs(shape = "Algorithm") +
+  scale_shape_manual(values = 1:12) +
+  geom_line(aes(colour = method)) +
+  labs(colour = "Method") +
+  coord_cartesian(xlim = c(10, 70), ylim = c(0,2.5)) +
+  facet_wrap(~ factor(country, levels = cntry_order2),
+             ncol=4) +
+  labs (#title = "% deprived cases missed vs time saved using two-stage adaptive approach",
+        #subtitle = paste0("Using single LTM for EU; ", 
+        #                  "NB y-axis truncated (Iceland [IS] cntry-specific line off top of chart)"),
+        #caption = "EU-SILC 2014",
+        x = "\nTime saving (%)",
+        y = "Percent of deprived cases 'missed'\n") +
+  theme(axis.text.x = element_text(angle = 90, size = axis.text.size)) + 
+  theme(axis.text.y = element_text(size = axis.text.size)) +
+  theme(axis.title = element_text(size = title.text.size * 1.2, face = "bold")) +
+  theme(strip.text = element_text(size = title.text.size, face = "bold")) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.25)) 
+
+# PAPERFIG 7
+ggsave(here(dir_figs, paste0("fig 7 - cntry vs EU models.png")),
+       height = 12, width = 10)
+ggsave(here(dir_figs, paste0("fig 7 - cntry vs EU models.tiff")),
+       device = "tiff",
+       height = 12, width = 10)
+```
+
+
+## Session Info
+```{r session}
+
+sessionInfo()
+
+```
+
