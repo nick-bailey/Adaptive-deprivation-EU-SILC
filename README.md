@@ -16,7 +16,7 @@ The published version of the paper used the first release of the data:
 Eurostat (2020) EU-Statistics on Income and Living Conditions microdata 2004-2018, release 2020, version 1 [dataset]. Eurostat. https://doi.org/10.2907/EUSILC2004-2018V.1
 
 In finalising the code and producing figures for this repository, the second release version was used, resulting in some very minor differences compared with the published figures: 
-Eurostat (2021) EU-Statistics on Income and Living Conditions microdata 2004-2020, release 2021, version 1 [dataset]. Eurostat. [https://doi.org/10.2907/EUSILC2004-2018V.1] https://doi.org/10.2907/EUSILC2004-2020V.1
+Eurostat (2021) EU-Statistics on Income and Living Conditions microdata 2004-2020, release 2021, version 1 [dataset]. Eurostat. https://doi.org/10.2907/EUSILC2004-2020V.1
 
 ## Code
 Dataset preparation and analysis was done using R (R Core Team, 2013) with packages ‘dplyr’ (Wickham et al 2019), ‘tidyverse’ (Wickham 2017), and ‘ltm’ (Rizopoulos 2006). To produce the figures here, we used the versions current at May 2022. We include code to produce the results in the paper, covering the 27 countries of the EU. We also include code to run the analysis for the 31 countries providing data to the EU-SILC in 2014. 
