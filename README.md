@@ -12,10 +12,14 @@ This work builds on an earlier project which first showed how adaptive deprivati
 ## Data
 Data for the EU-SILC were obtained under license from Eurostat by following their standard procedures. The license conditions prevent onward sharing of the data but other researchers can obtain the same data in the same way. 
 
-Eurostat (2020) EU-Statistics on Income and Living Conditions microdata 2004-2018, release 2020, version 1 [dataset]. Eurostat.
+The published version of the paper used the first release of the data: 
+Eurostat (2020) EU-Statistics on Income and Living Conditions microdata 2004-2018, release 2020, version 1 [dataset]. Eurostat. https://doi.org/10.2907/EUSILC2004-2018V.1
+
+In finalising the code and producing figures for this repository, the second release version was used, resulting in some very minor differences compared with the published figures: 
+Eurostat (2021) EU-Statistics on Income and Living Conditions microdata 2004-2020, release 2021, version 1 [dataset]. Eurostat. [https://doi.org/10.2907/EUSILC2004-2018V.1] https://doi.org/10.2907/EUSILC2004-2020V.1
 
 ## Code
-Dataset preparation and analysis was done using R (R Core Team, 2013) with packages ‘dplyr’ (Wickham et al 2019), ‘tidyverse’ (Wickham 2017), and ‘ltm’ (Rizopoulos 2006) current at May 2022. We include code to produce the results in the paper, covering the 27 countries of the EU. We also include code to run the analysis for the 31 countries providing data to the EU-SILC in 2014. 
+Dataset preparation and analysis was done using R (R Core Team, 2013) with packages ‘dplyr’ (Wickham et al 2019), ‘tidyverse’ (Wickham 2017), and ‘ltm’ (Rizopoulos 2006). To produce the figures here, we used the versions current at May 2022. We include code to produce the results in the paper, covering the 27 countries of the EU. We also include code to run the analysis for the 31 countries providing data to the EU-SILC in 2014. 
 
 ## Figures
-The figures contained within the final paper for the 27 EU countries are included here, along with the figures for all 31 countries participating in the EU-SILC in 2104. 
+The figures contained within the final paper for the 27 EU countries are included here, along with the figures for all 31 countries participating in the EU-SILC in 2104. Note points above about the versions here being produced with an updated dataset and software.
